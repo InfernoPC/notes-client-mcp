@@ -54,7 +54,7 @@ Tool 依風險分成四個等級，用對應的指令來選：
 |-------------------------------|------------------------------------------------------|
 | `notes-client-mcp`            | 郵件 + 一般文件/view 讀取（預設）                     |
 | `notes-client-mcp-design`     | `read` + Form/View/Agent/DXL 設計檢視                 |
-| `notes-client-mcp-write`      | `read` + 建立/更新文件、寄信                           |
+| `notes-client-mcp-write`      | `read` + 建立/更新文件                                |
 | `notes-client-mcp-all`        | 全部都有                                              |
 
 ```json
@@ -84,7 +84,10 @@ process、各自連一個 Notes session。
 ## Tools
 
 Read（`read` profile）：
-- `get_mail_database_info`、`list_mail_folders`、`search_mail`、`read_mail`
+- `get_mail_database_info`——從 `notes.ini` 解析出目前使用者信箱資料庫的 server + file path。
+  沒有其他信箱專用的 tool 了：拿到這個之後，跟操作任何其他資料庫一樣用下面的通用 tool 就好（原本有
+  `list_mail_folders`/`search_mail`/`read_mail` 這幾個包裝，因為通用 tool 配上信箱的 server+path
+  就能做一樣的事，屬於多餘的特殊化，已移除）。
 - `get_database_info`、`read_document`、`search_view`（任何資料庫，用 server+file path 指定）
 - `export_view_csv`——直接把 view 的資料寫成本機 CSV 檔（回傳的是檔案路徑，不是資料本身），不像
   `search_view` 會受限於 MCP tool 回傳結果的大小上限，適合資料量大的 view。
@@ -102,6 +105,13 @@ Design（`design` profile，額外新增）：
 
 Write（`write` profile，額外新增——**每一個都會先透過 MCP elicitation 跳出互動確認才會真的寫入**，
 所以你的 MCP client 需要支援 elicitation 這些 tool 才能正常運作）：
+
+`create_document`/`update_document` 的 `fields` 參數是 `{名稱: 值}`，用一般 JSON 型別即可——
+`str`/`int`/`float`/`bool`/list 都能正確對應到正確的 Notes 欄位型別（已實測確認）。唯一的例外是
+日期：純字串不會自動變成真正的 Date/Time 欄位（只會存成文字），所以會自動偵測 ISO-8601 格式的字串
+（例如 `"2026-03-05"` 或完整日期時間）並轉成真正的 Notes 日期值——所以如果某個欄位本來就是要存
+「看起來像日期的純文字」，要注意這個自動轉換行為。
+
 - `create_document(server_name, file_path, form, fields)`——任何資料庫。設定欄位**前後**各呼叫
   一次 `ComputeWithForm`（先讓預設值公式跑完，再讓依賴你所設欄位值的公式重新計算），比照真實
   LotusScript 寫法，而不是單純寫欄位——已實測確認：只在設完欄位後呼叫一次，會漏掉表單只在「建立
@@ -114,7 +124,9 @@ Write（`write` profile，額外新增——**每一個都會先透過 MCP elici
   如果重試一次還是撞到衝突就會回報清楚的錯誤。也會檢查 Document Locking（資料庫層級的功能，大部分
   資料庫預設沒開——只有目標資料庫真的有開這個功能時才會生效），如果文件被別人鎖住會直接拒絕並回報
   清楚的錯誤。
-- `send_mail(sendto, subject, body)`——從目前使用者的信箱寄出
+
+沒有 `send_mail`——已移除，因為它是不必要的特例；寄信跟這個工具其他沒有特別特殊化的寫入操作本質上
+沒有差別。
 
 ## 已知限制
 
@@ -127,9 +139,9 @@ Write（`write` profile，額外新增——**每一個都會先透過 MCP elici
 - 沒有通用的「列出所有資料庫」功能——只有信箱資料庫會自動偵測（透過 `notes.ini` 的
   `MailServer`/`MailFile`）。其他資料庫要自己明確指定 `server` + `file_path`。
 - 目前還沒有行事曆相關的 tool。
-- 寫入類 tool 已經過程式碼審查與 import 層級測試，但**還沒有真的對活的資料庫/信箱跑過**——真的跑
-  下去會建立真實文件/寄出真實郵件。請自己先在一份測試文件或自己的信箱上驗證過，再信任它們去動真正
-  重要的資料。
+- 寫入類 tool 已經透過真正的 MCP 路徑、帶著 elicitation 確認，對活的資料庫親自測過（建立、更新、
+  衝突偵測、欄位型別處理）——不過每個資料庫的表單/ACL 都不一樣，真的要動重要資料前，還是建議先拿
+  自己的測試文件試一次。
 - `export_design_dxl` 使用 `session.CreateDXLExporter(nc).Export()`——其他看起來合理的呼叫方式
   （`.SetInput()`、`.Input =`）都試過，在這個 Domino 版本的 COM binding 上不存在；如果未來某個
   Domino 版本又不一樣了，`tools/design.py` 的 `_export_dxl()` 已經會依序嘗試四種寫法，全部失敗才會
@@ -141,5 +153,5 @@ Write（`write` profile，額外新增——**每一個都會先透過 MCP elici
 ```
 C:\path\to\python.exe -m notes_mcp.server
 ```
-確認它印出 `connected as '...'`。接著把它註冊進你的 MCP client（上面的步驟），請它呼叫
-`get_mail_database_info` / `search_mail` 帶一個真實查詢，確認結果跟你的信箱相符。
+確認它印出 `connected as '...'`。接著把它註冊進你的 MCP client（上面的步驟），請它先呼叫
+`get_mail_database_info`，再對結果裡的 `($Inbox)` view 呼叫 `search_view`，確認結果跟你的信箱相符。

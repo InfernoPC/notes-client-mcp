@@ -101,7 +101,12 @@ default.
 ## Tools
 
 Read (`read` profile):
-- `get_mail_database_info`, `list_mail_folders`, `search_mail`, `read_mail`
+- `get_mail_database_info` — resolves the current user's mail database
+  (server + file path) from `notes.ini`. There's no other mail-specific tool:
+  once you have this, use it with the generic tools below like any other
+  database (there used to be `list_mail_folders`/`search_mail`/`read_mail`
+  wrappers; removed as redundant special-casing once the generic tools could
+  do the same thing with the mail db's server+path).
 - `get_database_info`, `read_document`, `search_view` (any database, by server+file path)
 - `export_view_csv` — writes a view's rows straight to a local CSV file
   (path returned, not the data itself) instead of returning them over MCP,
@@ -127,6 +132,15 @@ Design (`design` profile, adds):
 Write (`write` profile, adds — **each asks for interactive confirmation via
 MCP elicitation before writing anything**, so the MCP client needs to support
 elicitation for these to work):
+Both `create_document`/`update_document` take `fields` as `{name: value}`
+with normal JSON types - `str`/`int`/`float`/`bool`/a list all marshal
+correctly into the right Notes item type on their own (confirmed by hand).
+The one exception is dates: a plain string doesn't become a real Date/Time
+item on its own (it just stores as text), so an ISO-8601 string
+(`"2026-03-05"` or a full datetime) is auto-detected and converted to a real
+Notes date/time value instead - so don't use an ISO-date-shaped string for a
+field that's genuinely meant to hold that exact text.
+
 - `create_document(server_name, file_path, form, fields)` — any database.
   Runs `ComputeWithForm` before *and* after setting fields (so default-value
   formulas populate first, then anything depending on your field values
@@ -146,7 +160,10 @@ elicitation for these to work):
   feature, off in most databases - only enforced when the target database
   actually has it turned on) and refuses with a clear error if someone else
   holds the lock.
-- `send_mail(sendto, subject, body)` — from the current user's mail account
+
+There is no `send_mail` - it was removed as an unnecessary special case;
+sending mail isn't meaningfully different from other write operations this
+tool doesn't otherwise special-case.
 
 ## Known limitations
 
@@ -163,10 +180,11 @@ elicitation for these to work):
   auto-discovered (via `notes.ini`'s `MailServer`/`MailFile`). Other
   databases must be passed explicitly as `server` + `file_path`.
 - No calendar tools yet.
-- Write tools are code-reviewed and unit-import-tested but **not yet
-  exercised against a live database/mailbox** — doing so creates real
-  documents / sends real mail. Test them yourself against a scratch
-  document or your own inbox before trusting them on anything that matters.
+- Write tools have been exercised by hand against a live database (create,
+  update, conflict detection, field-type handling) through the real MCP
+  path with elicitation confirmation - still worth testing against a scratch
+  document of your own before trusting them on anything that matters, since
+  every database's forms/ACLs differ.
 - `export_design_dxl` uses `session.CreateDXLExporter(nc).Export()` - other
   plausible call shapes (`.SetInput()`, `.Input =`) were tried and don't
   exist on this Domino version's COM binding; if a future Domino version
@@ -181,5 +199,6 @@ elicitation for these to work):
 C:\path\to\python.exe -m notes_mcp.server
 ```
 Confirm it prints `connected as '...'`. Then register it with your MCP
-client (above) and ask it to call `get_mail_database_info` / `search_mail`
-with a real query, and confirm the results match your mailbox.
+client (above) and ask it to call `get_mail_database_info`, then
+`search_view` against the result's `($Inbox)` view, and confirm the results
+match your mailbox.

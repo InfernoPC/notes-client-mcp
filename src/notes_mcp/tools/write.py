@@ -1,4 +1,4 @@
-"""Write tools: create/update documents, send mail.
+"""Write tools: create/update documents.
 
 These do their entire COM interaction inside one NotesBackend.run() closure,
 same as the read-only tools (see notes_backend.open_database). Unlike the
@@ -9,7 +9,35 @@ confirm anything; it assumes the caller already got the user's go-ahead.
 
 from __future__ import annotations
 
+import datetime
+from typing import Any
+
 from ..notes_backend import NotesBackend, open_database
+
+
+def _to_notes_value(session, value: Any) -> Any:
+    """Convert a JSON-friendly field value into whatever ReplaceItemValue
+    needs to produce the right Notes item type.
+
+    Confirmed by hand: plain Python int/float/bool/list/str already marshal
+    correctly via COM into Number/Number/Number/Text-multivalue/Text items
+    respectively - no conversion needed. The one exception is dates: a raw
+    ISO string just becomes a Text item (confirmed: "2026-01-15" stored as
+    plain text, not a date/time item), it needs an actual NotesDateTime
+    object instead. Auto-detect ISO-8601 date/datetime strings and convert
+    those via session.CreateDateTime(); every other string is left as plain
+    text, which does mean a legitimate text value that happens to look like
+    an ISO date/datetime gets converted too - an accepted trade-off for not
+    needing a separate wrapper syntax for dates.
+    """
+    if isinstance(value, str):
+        try:
+            datetime.datetime.fromisoformat(value)
+        except ValueError:
+            pass
+        else:
+            return session.CreateDateTime(value)
+    return value
 
 
 def create_document(
@@ -17,7 +45,7 @@ def create_document(
     server: str,
     file_path: str,
     form: str,
-    fields: dict[str, str],
+    fields: dict[str, Any],
 ) -> dict:
     def _op(session):
         db = open_database(session, server, file_path)
@@ -35,7 +63,7 @@ def create_document(
         # a display-only formula erroring shouldn't lose the write.
         doc.ComputeWithForm(False, False)
         for name, value in fields.items():
-            doc.ReplaceItemValue(name, value)
+            doc.ReplaceItemValue(name, _to_notes_value(session, value))
         doc.ComputeWithForm(False, False)
         doc.Save(False, False)  # new document, nothing to conflict with
         return {"unid": doc.UniversalID, "note_id": doc.NoteID}
@@ -56,14 +84,14 @@ def update_document(
     server: str,
     file_path: str,
     unid: str,
-    fields: dict[str, str],
+    fields: dict[str, Any],
 ) -> dict:
-    def _apply(doc):
-        for name, value in fields.items():
-            doc.ReplaceItemValue(name, value)
-        doc.ComputeWithForm(False, False)
-
     def _op(session):
+        def _apply(doc):
+            for name, value in fields.items():
+                doc.ReplaceItemValue(name, _to_notes_value(session, value))
+            doc.ComputeWithForm(False, False)
+
         db = open_database(session, server, file_path)
         doc = db.GetDocumentByUNID(unid)
         if doc is None:
@@ -120,21 +148,5 @@ def update_document(
         finally:
             if locking_enabled:
                 doc.Unlock()
-
-    return backend.run(_op)
-
-
-def send_mail(backend: NotesBackend, sendto: str, subject: str, body: str) -> dict:
-    def _op(session):
-        mail_server = session.GetEnvironmentString("MailServer", True)
-        mail_file = session.GetEnvironmentString("MailFile", True)
-        db = open_database(session, mail_server, mail_file)
-        doc = db.CreateDocument()
-        doc.ReplaceItemValue("Form", "Memo")
-        doc.ReplaceItemValue("SendTo", sendto)
-        doc.ReplaceItemValue("Subject", subject)
-        doc.ReplaceItemValue("Body", body)
-        doc.Send(False)
-        return {"unid": doc.UniversalID, "sendto": sendto, "subject": subject}
 
     return backend.run(_op)

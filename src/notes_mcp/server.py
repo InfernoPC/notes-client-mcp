@@ -23,6 +23,7 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import Any
 
 from dotenv import load_dotenv
 from mcp.server.mcpserver import Context, MCPServer
@@ -30,7 +31,7 @@ from pydantic import BaseModel, Field
 
 from .notes_backend import NotesBackend, NotesConnectionError
 from .tiers import PROFILES, TOOL_TAGS
-from .tools import databases, design, mail, write
+from .tools import databases, design, write
 
 # Load .env from the project root (two levels above this file:
 # src/notes_mcp/server.py -> src -> project root) regardless of the current
@@ -130,21 +131,6 @@ def search_database(server_name: str, file_path: str, formula: str, max_docs: in
     return databases.search_database(backend, server_name, file_path, formula, max_docs)
 
 
-def list_mail_folders() -> list[dict]:
-    """List folders in the current user's mail database."""
-    return mail.list_folders(backend)
-
-
-def search_mail(query: str, folder: str = "($Inbox)", limit: int = 20) -> list[dict]:
-    """Search the current user's mail (full-text if indexed, else Subject/From substring scan)."""
-    return mail.search_mail(backend, query, folder, limit)
-
-
-def read_mail(unid: str) -> dict:
-    """Read one mail document (subject/from/sendto/date/body) by UniversalID."""
-    return mail.read_mail(backend, unid)
-
-
 # ---- design tools ---------------------------------------------------------
 
 
@@ -186,7 +172,7 @@ async def create_document(
     server_name: str,
     file_path: str,
     form: str,
-    fields: dict[str, str],
+    fields: dict[str, Any],
     ctx: Context,
 ) -> dict:
     """Create a new document. Asks for interactive confirmation before writing anything."""
@@ -205,7 +191,7 @@ async def update_document(
     server_name: str,
     file_path: str,
     unid: str,
-    fields: dict[str, str],
+    fields: dict[str, Any],
     ctx: Context,
 ) -> dict:
     """Update an existing document's fields by UniversalID. Asks for interactive
@@ -221,18 +207,6 @@ async def update_document(
     return write.update_document(backend, server_name, file_path, unid, fields)
 
 
-async def send_mail(sendto: str, subject: str, body: str, ctx: Context) -> dict:
-    """Send an email from the current user's mail account. Asks for
-    interactive confirmation before sending anything."""
-    ok = await _confirm(
-        ctx,
-        f"Send mail to {sendto!r}\nSubject: {subject}\n\n{body}\n\nThis sends immediately. Proceed?",
-    )
-    if not ok:
-        return {"status": "cancelled"}
-    return write.send_mail(backend, sendto, subject, body)
-
-
 # ---- registration ----------------------------------------------------------
 
 _TOOL_FUNCS: dict[str, object] = {
@@ -243,16 +217,12 @@ _TOOL_FUNCS: dict[str, object] = {
     "export_view_csv": export_view_csv,
     "find_document_by_key": find_document_by_key,
     "search_database": search_database,
-    "list_mail_folders": list_mail_folders,
-    "search_mail": search_mail,
-    "read_mail": read_mail,
     "list_forms": list_forms,
     "list_views": list_views,
     "list_agents": list_agents,
     "export_design_dxl": export_design_dxl,
     "create_document": create_document,
     "update_document": update_document,
-    "send_mail": send_mail,
 }
 
 

@@ -16,16 +16,12 @@ TOOL_TAGS: dict[str, frozenset[str]] = {
     "export_view_csv": frozenset({"read"}),
     "find_document_by_key": frozenset({"read"}),
     "search_database": frozenset({"read"}),
-    "list_mail_folders": frozenset({"read"}),
-    "search_mail": frozenset({"read"}),
-    "read_mail": frozenset({"read"}),
     "list_forms": frozenset({"design"}),
     "list_views": frozenset({"design"}),
     "list_agents": frozenset({"design"}),
     "export_design_dxl": frozenset({"design"}),
     "create_document": frozenset({"write"}),
     "update_document": frozenset({"write"}),
-    "send_mail": frozenset({"write"}),
 }
 
 PROFILES: dict[str, frozenset[str]] = {
