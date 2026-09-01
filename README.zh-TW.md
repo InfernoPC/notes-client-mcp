@@ -95,6 +95,12 @@ Write（`write` profile，額外新增——**每一個都會先透過 MCP elici
 
 ## 已知限制
 
+- 如果你的 MCP client 同時註冊多個 profile（例如 `.mcp.json.example` 裡的四個都開），它們的
+  `Initialize()` 呼叫在 client 啟動時可能剛好落在同一瞬間，撞上 Notes ID 檔的鎖
+  （`"The ID file is locked by another process"`）——已實測重現，並已在 `notes_backend.py` 加上
+  短暫的 retry-with-backoff 修好（這個鎖只在單次 `Initialize()` 呼叫期間存在，不是整個 session
+  都鎖著，所以稍等一下重試就會成功）。已做壓力測試，4 個 profile 同時啟動 12/12 次都成功連線；如果
+  你之後還是遇到這個錯誤，值得重新測一次，不要假設它是永久性的問題。
 - 沒有通用的「列出所有資料庫」功能——只有信箱資料庫會自動偵測（透過 `notes.ini` 的
   `MailServer`/`MailFile`）。其他資料庫要自己明確指定 `server` + `file_path`。
 - 目前還沒有行事曆相關的 tool。

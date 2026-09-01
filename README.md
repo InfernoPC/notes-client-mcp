@@ -111,6 +111,15 @@ elicitation for these to work):
 
 ## Known limitations
 
+- If your MCP client registers multiple profiles at once (e.g. all four in
+  `.mcp.json.example`), their `Initialize()` calls can land in the same
+  instant at client startup and collide on the Notes ID file's lock
+  (`"The ID file is locked by another process"`) - confirmed by hand, and
+  mitigated with a short retry-with-backoff in `notes_backend.py` (the lock
+  is only held for the duration of one `Initialize()` call, not the whole
+  session, so a retry a moment later just works). Stress-tested at 12/12
+  successful simultaneous 4-profile connections; if you ever still see this
+  error, it's worth re-testing rather than assuming it's permanent.
 - No generic "list all databases" — only the mail database is
   auto-discovered (via `notes.ini`'s `MailServer`/`MailFile`). Other
   databases must be passed explicitly as `server` + `file_path`.

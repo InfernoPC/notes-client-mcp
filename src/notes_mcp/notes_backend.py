@@ -14,6 +14,8 @@ entirely, so it cannot trigger that class of failure.
 from __future__ import annotations
 
 import os
+import random
+import time
 from dataclasses import dataclass
 from typing import Callable, TypeVar
 
@@ -22,6 +24,18 @@ import win32com.client
 from .sta_worker import StaWorker
 
 T = TypeVar("T")
+
+# session.Initialize() briefly locks the ID file for the duration of the
+# call only (confirmed by hand: a second process can connect immediately
+# once the first Initialize() returns, even while the first session stays
+# open) - but if an MCP client spawns several notes-client-mcp profile
+# processes at once (e.g. registering read + write + design + all
+# together), two Initialize() calls can land in the same instant and one
+# gets "The ID file is locked by another process. Try again later" and
+# exits. A few short retries with jitter absorbs that race.
+_INIT_LOCK_ERROR = "locked by another process"
+_INIT_MAX_ATTEMPTS = 5
+_INIT_RETRY_DELAY_RANGE = (0.5, 1.5)
 
 
 class NotesConnectionError(RuntimeError):
@@ -69,10 +83,20 @@ class NotesBackend:
             session.Initialize(password)
             return session
 
-        try:
-            self._session = self._worker.call(_connect)
-        except Exception as exc:  # noqa: BLE001
-            raise NotesConnectionError(f"Notes session Initialize failed: {exc}") from exc
+        last_exc: Exception | None = None
+        for attempt in range(1, _INIT_MAX_ATTEMPTS + 1):
+            try:
+                self._session = self._worker.call(_connect)
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                if _INIT_LOCK_ERROR not in str(exc) or attempt == _INIT_MAX_ATTEMPTS:
+                    break
+                time.sleep(random.uniform(*_INIT_RETRY_DELAY_RANGE))
+
+        if last_exc is not None:
+            raise NotesConnectionError(f"Notes session Initialize failed: {last_exc}") from last_exc
         return self.run(lambda s: s.UserName)
 
     @property
