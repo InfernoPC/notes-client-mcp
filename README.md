@@ -113,8 +113,25 @@ Design (`design` profile, adds):
 Write (`write` profile, adds — **each asks for interactive confirmation via
 MCP elicitation before writing anything**, so the MCP client needs to support
 elicitation for these to work):
-- `create_document(server_name, file_path, form, fields)` — any database
-- `update_document(server_name, file_path, unid, fields)` — any database
+- `create_document(server_name, file_path, form, fields)` — any database.
+  Runs `ComputeWithForm` before *and* after setting fields (so default-value
+  formulas populate first, then anything depending on your field values
+  recomputes), matching real LotusScript practice rather than a raw field
+  write - confirmed by hand that a single `ComputeWithForm` after skips
+  fields the form only populates on creation.
+- `update_document(server_name, file_path, unid, fields)` — any database.
+  Never overwrites a conflicting concurrent edit: confirmed by hand that the
+  backend `Save()` call does **not** detect or refuse stale writes on its own
+  (two independent in-memory copies of the same document both saved
+  successfully, the second silently clobbering the first - that protection
+  is a front-end `NotesUIDocument` behavior, not this backend class), so
+  conflict detection is manual (`LastModified` compared right before
+  saving); on a detected conflict it reloads the current document and
+  reapplies your `fields` once rather than saving blind, and fails clearly
+  if it races a second time. Also checks Document Locking (a database-level
+  feature, off in most databases - only enforced when the target database
+  actually has it turned on) and refuses with a clear error if someone else
+  holds the lock.
 - `send_mail(sendto, subject, body)` — from the current user's mail account
 
 ## Known limitations

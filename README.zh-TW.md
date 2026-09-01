@@ -94,8 +94,18 @@ Design（`design` profile，額外新增）：
 
 Write（`write` profile，額外新增——**每一個都會先透過 MCP elicitation 跳出互動確認才會真的寫入**，
 所以你的 MCP client 需要支援 elicitation 這些 tool 才能正常運作）：
-- `create_document(server_name, file_path, form, fields)`——任何資料庫
-- `update_document(server_name, file_path, unid, fields)`——任何資料庫
+- `create_document(server_name, file_path, form, fields)`——任何資料庫。設定欄位**前後**各呼叫
+  一次 `ComputeWithForm`（先讓預設值公式跑完，再讓依賴你所設欄位值的公式重新計算），比照真實
+  LotusScript 寫法，而不是單純寫欄位——已實測確認：只在設完欄位後呼叫一次，會漏掉表單只在「建立
+  當下」才會計算的欄位。
+- `update_document(server_name, file_path, unid, fields)`——任何資料庫。**絕不會覆蓋掉別人同時
+  做的修改**：已實測確認 backend 的 `Save()` 本身**不會**偵測或拒絕過期的寫入（兩個各自獨立、指向
+  同一份文件的記憶體副本都能成功 `Save`，第二次會悄悄蓋掉第一次、沒有任何錯誤——那種保護是前端
+  `NotesUIDocument` 才有的行為，這個 backend class 沒有），所以衝突偵測是手動做的（存檔前比對
+  `LastModified`）；偵測到衝突時會重新讀取目前的文件、把你要的 `fields` 重新套用一次，而不是硬存，
+  如果重試一次還是撞到衝突就會回報清楚的錯誤。也會檢查 Document Locking（資料庫層級的功能，大部分
+  資料庫預設沒開——只有目標資料庫真的有開這個功能時才會生效），如果文件被別人鎖住會直接拒絕並回報
+  清楚的錯誤。
 - `send_mail(sendto, subject, body)`——從目前使用者的信箱寄出
 
 ## 已知限制
