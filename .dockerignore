@@ -1,0 +1,13 @@
+.git
+.gitignore
+.env
+.env.example
+.mcp.json
+.mcp.json.example
+.claude
+__pycache__
+*.pyc
+*.egg-info
+.venv
+build
+dist

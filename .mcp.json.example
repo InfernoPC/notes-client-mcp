@@ -1,0 +1,48 @@
+{
+  "mcpServers": {
+    "notes-client": {
+      "type": "stdio",
+      "command": "C:\\path\\to\\python.exe",
+      "args": [
+        "-m",
+        "notes_mcp.server"
+      ],
+      "env": {
+        "NOTES_MCP_PROFILE": "read"
+      }
+    },
+    "notes-client-design": {
+      "type": "stdio",
+      "command": "C:\\path\\to\\python.exe",
+      "args": [
+        "-m",
+        "notes_mcp.server"
+      ],
+      "env": {
+        "NOTES_MCP_PROFILE": "design"
+      }
+    },
+    "notes-client-write": {
+      "type": "stdio",
+      "command": "C:\\path\\to\\python.exe",
+      "args": [
+        "-m",
+        "notes_mcp.server"
+      ],
+      "env": {
+        "NOTES_MCP_PROFILE": "write"
+      }
+    },
+    "notes-client-all": {
+      "type": "stdio",
+      "command": "C:\\path\\to\\python.exe",
+      "args": [
+        "-m",
+        "notes_mcp.server"
+      ],
+      "env": {
+        "NOTES_MCP_PROFILE": "all"
+      }
+    }
+  }
+}

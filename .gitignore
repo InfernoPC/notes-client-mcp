@@ -7,3 +7,10 @@ dist/
 
 # Local/personal Claude Code settings - not shared project config.
 .claude/settings.local.json
+
+# Holds NOTES_PASSWORD in plaintext - never commit. See .env.example.
+.env
+
+# Local machine paths (e.g. your Python interpreter path) - never commit.
+# See .mcp.json.example for the template.
+.mcp.json

@@ -14,6 +14,7 @@ entirely, so it cannot trigger that class of failure.
 from __future__ import annotations
 
 import getpass
+import os
 from dataclasses import dataclass
 from typing import Callable, TypeVar
 
@@ -48,6 +49,14 @@ class NotesBackend:
         self._session = None
 
     def connect(self, password: str | None = None) -> str:
+        # Priority: explicit arg > NOTES_PASSWORD env var (e.g. from a .env
+        # file loaded by the caller - see host_agent.py) > interactive
+        # getpass fallback. The env var path means the password sits in
+        # plaintext on disk (in .env) - that trade-off was made explicitly
+        # by the project owner; it is not the default anyone else should
+        # assume. Keep the .gitignore entry for .env and never log this value.
+        if password is None:
+            password = os.environ.get("NOTES_PASSWORD")
         if password is None:
             password = getpass.getpass("HCL Notes ID 密碼 (不會顯示、不會存檔): ")
 
