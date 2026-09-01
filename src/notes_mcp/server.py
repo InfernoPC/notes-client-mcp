@@ -92,6 +92,21 @@ def search_view(
     return databases.search_view(backend, server_name, file_path, view_name, limit, columns)
 
 
+def export_view_csv(
+    server_name: str,
+    file_path: str,
+    view_name: str,
+    output_path: str | None = None,
+    columns: list[str] | None = None,
+    limit: int = 10000,
+) -> dict:
+    """Export a view's rows straight to a local CSV file (written on this
+    machine, not returned over MCP - handles views far larger than a single
+    tool result could carry). Defaults to a generated path in the system
+    temp directory if output_path is omitted."""
+    return databases.export_view_csv(backend, server_name, file_path, view_name, output_path, columns, limit)
+
+
 def list_mail_folders() -> list[dict]:
     """List folders in the current user's mail database."""
     return mail.list_folders(backend)
@@ -202,6 +217,7 @@ _TOOL_FUNCS: dict[str, object] = {
     "get_database_info": get_database_info,
     "read_document": read_document,
     "search_view": search_view,
+    "export_view_csv": export_view_csv,
     "list_mail_folders": list_mail_folders,
     "search_mail": search_mail,
     "read_mail": read_mail,
