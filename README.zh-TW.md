@@ -33,17 +33,16 @@ Docker——就是像 `mcp-server-git` 那樣單純的 `command`/`args` 設定�
 
 - 在這個目錄下，用該直譯器跑 `pip install -e .`。
 
-## 密碼：透過 MCP client 執行時，`.env` 是必要的
+## 密碼：`.env`（必要）
 
-在把這個工具註冊進任何 MCP client **之前**，先把 `.env.example` 複製成專案根目錄下的 `.env`，設定
-`NOTES_PASSWORD`。**這會把你的 Notes ID 密碼以明文存在磁碟上**——這是刻意選擇「方便優先於安全」的
-取捨。`.env` 已加進 `.gitignore`；絕對不要把它提交、分享，或讓它離開這台機器。
+在跑起來**之前**，先把 `.env.example` 複製成專案根目錄下的 `.env`，設定 `NOTES_PASSWORD`。
+**這會把你的 Notes ID 密碼以明文存在磁碟上**——這是刻意選擇「方便優先於安全」的取捨。`.env` 已
+加進 `.gitignore`；絕對不要把它提交、分享，或讓它離開這台機器。
 
-雖然還有一個 `NOTES_PASSWORD` 沒設時的互動式 `getpass()` fallback，但**已經實測確認：由 MCP
-client 啟動這個 process 時，這個 fallback 完全無法運作**——client 會把 stdin 整個拿去跑
-JSON-RPC 串流，導致 `getpass()` 永遠卡住等一個不會出現的輸入，最後被 client 判定連線逾時、直接
-砍掉這個 process。這個 fallback 只有在你自己直接手動跑 `python -m notes_mcp.server`（例如下面的
-煙霧測試）時才有用——**透過 MCP client 啟動、又沒設定 `.env` 的情況下絕對不會成功**。
+沒有互動輸入的 fallback：已經實測確認，由 MCP client 啟動這個 process 時這種提示完全無法運作
+（client 會把 stdin 整個拿去跑 JSON-RPC 串流，提示只會永遠卡住，最後被 client 判定連線逾時直接
+砍掉），所以不值得留著這段用不到的程式碼。沒設定 `NOTES_PASSWORD` 的話，process 會直接快速失敗，
+回報清楚的錯誤訊息。
 
 **密碼永遠只存在於這台機器上。**絕對不要把它放進 Claude Desktop / GitHub Copilot 的 MCP 設定檔裡。
 

@@ -13,7 +13,6 @@ entirely, so it cannot trigger that class of failure.
 
 from __future__ import annotations
 
-import getpass
 import os
 from dataclasses import dataclass
 from typing import Callable, TypeVar
@@ -38,9 +37,7 @@ class MailAddress:
 class NotesBackend:
     """One backend NotesSession, owned by a dedicated STA thread.
 
-    Call connect() once at process startup (password is read once via
-    getpass and kept only in this process's memory - never written to disk,
-    never passed through the MCP protocol). After that, every tool call runs
+    Call connect() once at process startup. After that, every tool call runs
     through run()/get_database() on the same STA thread.
     """
 
@@ -50,15 +47,22 @@ class NotesBackend:
 
     def connect(self, password: str | None = None) -> str:
         # Priority: explicit arg > NOTES_PASSWORD env var (e.g. from a .env
-        # file loaded by the caller - see server.py) > interactive
-        # getpass fallback. The env var path means the password sits in
-        # plaintext on disk (in .env) - that trade-off was made explicitly
-        # by the project owner; it is not the default anyone else should
-        # assume. Keep the .gitignore entry for .env and never log this value.
+        # file loaded by the caller - see server.py). No interactive fallback:
+        # confirmed by hand that getpass() cannot work when an MCP client
+        # spawns this process (it owns stdin entirely for the JSON-RPC
+        # stream), so it just hangs until the client times out the
+        # connection. NOTES_PASSWORD in .env means the password sits in
+        # plaintext on disk - that trade-off was made explicitly by the
+        # project owner; it is not the default anyone else should assume.
+        # Keep the .gitignore entry for .env and never log this value.
         if password is None:
             password = os.environ.get("NOTES_PASSWORD")
-        if password is None:
-            password = getpass.getpass("HCL Notes ID 密碼 (不會顯示、不會存檔): ")
+        if not password:
+            raise NotesConnectionError(
+                "NOTES_PASSWORD is not set. Copy .env.example to .env in the "
+                "project root and set NOTES_PASSWORD before running this "
+                "under an MCP client."
+            )
 
         def _connect():
             session = win32com.client.Dispatch("Lotus.NotesSession")
