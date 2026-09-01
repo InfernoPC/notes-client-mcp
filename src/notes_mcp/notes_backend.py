@@ -50,7 +50,7 @@ class NotesBackend:
 
     def connect(self, password: str | None = None) -> str:
         # Priority: explicit arg > NOTES_PASSWORD env var (e.g. from a .env
-        # file loaded by the caller - see host_agent.py) > interactive
+        # file loaded by the caller - see server.py) > interactive
         # getpass fallback. The env var path means the password sits in
         # plaintext on disk (in .env) - that trade-off was made explicitly
         # by the project owner; it is not the default anyone else should

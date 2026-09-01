@@ -1,15 +1,9 @@
 """Single source of truth for which MCP tools are read/design/write, and
 which tiers each profile allows.
 
-Both the MCP Relay (server.py - cosmetic: controls which tool names the MCP
-client even sees) AND the Host Agent (host_agent.py - load-bearing: the
-actual privileged executor) enforce this independently. The Relay's
-restriction alone would be a hollow security boundary: anything that can
-reach the Host Agent's 127.0.0.1:8765 directly (a bug, a misconfigured
-relay, a raw curl call) could otherwise invoke write operations regardless
-of what the Relay exposes. Starting the Host Agent with no profile override
-must default to "read" and refuse write/design calls outright, not just
-rely on the Relay not asking for them.
+server.py uses this to decide which tool names to register with the MCP
+client for a given profile (NOTES_MCP_PROFILE / the notes-client-mcp[-design|
+-write|-all] console scripts) - see register_tools() there.
 """
 
 from __future__ import annotations

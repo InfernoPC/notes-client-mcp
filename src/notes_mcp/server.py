@@ -1,93 +1,57 @@
-"""notes-client-mcp MCP relay.
+"""notes-client-mcp: single-process MCP server.
 
-This process holds NO COM objects and asks for NO password. It is spawned
-directly by the MCP client (Claude Desktop/Code, GitHub Copilot, ...) over
-stdio, and forwards every tool call over HTTP to the Host Agent
-(host_agent.py), which must already be running on 127.0.0.1 (see README.md).
+Spawned directly by the MCP client (Claude Desktop/Code, GitHub Copilot,
+...) over stdio. This one process does everything: holds the backend
+NotesSession COM session (on a dedicated STA thread - see sta_worker.py)
+and speaks MCP stdio.
 
-Deliberately COM-free so it can run on any Python (32 or 64-bit) and is the
-piece that gets packaged into the Docker image in Phase 2 - the container
-never needs pywin32 or a matching Notes bitness, it just needs to reach the
-Host Agent over the network (e.g. host.docker.internal).
+Must be launched with a Python interpreter whose bitness matches the
+installed Notes Client (see README.md) - COM automation requires this.
 
 Tools are tagged "read", "design", or "write" and only registered if the
 active profile includes that tag - see PROFILES below and the four
 console-script entry points in pyproject.toml (notes-client-mcp[-design|
 -write|-all]). Profile is picked, in order: the `profile` argument to main(),
 then the NOTES_MCP_PROFILE env var, then "read".
+
+Write tools ask for interactive confirmation via MCP elicitation before
+making any change - see ConfirmWrite/_confirm below.
 """
 
 from __future__ import annotations
 
-import json
 import os
-import socket
 import sys
-import urllib.error
-import urllib.request
-from urllib.parse import urlsplit, urlunsplit
+from pathlib import Path
 
+from dotenv import load_dotenv
 from mcp.server.mcpserver import Context, MCPServer
 from pydantic import BaseModel, Field
 
+from .notes_backend import NotesBackend, NotesConnectionError
 from .tiers import PROFILES, TOOL_TAGS
+from .tools import databases, design, mail, write
 
-HOST_AGENT_URL = os.environ.get("NOTES_HOST_AGENT_URL", "http://127.0.0.1:8765")
-
-
-def _force_ipv4(url: str) -> str:
-    """Rewrite url's host to a literal IPv4 address before connecting.
-
-    Docker Desktop's `host.docker.internal` can resolve to both an IPv4 and
-    an IPv6 address inside a container, where the IPv6 route is broken
-    (ENETUNREACH) but IPv4 works fine - confirmed by hand while testing the
-    Docker packaging. urllib's default dual-stack connect logic can hit the
-    bad IPv6 address first and fail outright rather than falling back, so
-    force IPv4 resolution here instead of trusting getaddrinfo's ordering.
-    Falls back to the original url if resolution fails for any reason (e.g.
-    running natively against 127.0.0.1, where this is a no-op anyway).
-    """
-    parts = urlsplit(url)
-    if not parts.hostname:
-        return url
-    try:
-        port = parts.port or (443 if parts.scheme == "https" else 80)
-        ipv4 = socket.getaddrinfo(parts.hostname, port, socket.AF_INET, socket.SOCK_STREAM)[0][4][0]
-    except OSError:
-        return url
-    return urlunsplit((parts.scheme, f"{ipv4}:{port}", parts.path, parts.query, parts.fragment))
+# Load .env from the project root (two levels above this file:
+# src/notes_mcp/server.py -> src -> project root) regardless of the current
+# working directory this process was launched from. NOTES_PASSWORD is read
+# later, at connect() time, so it just needs to be in os.environ before
+# main() calls backend.connect() - see notes_backend.py for the priority
+# order and the explicitly-chosen plaintext-on-disk trade-off this represents.
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 server = MCPServer(
     name="notes-client-mcp",
     instructions=(
         "Access to the local HCL Notes Client (mail, databases, and NSF "
-        "design elements), relayed to a separate Host Agent process that "
-        "holds the actual Notes COM session. The Host Agent must be running "
-        "(see README.md) before these tools will work. Write tools ask the "
-        "user for interactive confirmation before making any change."
+        "design elements) via backend COM automation. Requires the HCL "
+        "Notes Client to be installed and the user's ID file available on "
+        "this machine. Write tools ask the user for interactive "
+        "confirmation before making any change."
     ),
 )
 
-
-def _call_host_agent(tool: str, **kwargs) -> object:
-    payload = json.dumps({"tool": tool, "args": kwargs}).encode("utf-8")
-    req = urllib.request.Request(
-        _force_ipv4(f"{HOST_AGENT_URL}/call"),
-        data=payload,
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read())
-    except urllib.error.URLError as exc:
-        raise RuntimeError(
-            f"Could not reach the Notes Host Agent at {HOST_AGENT_URL} ({exc}). "
-            "Is `python -m notes_mcp.host_agent` running on this machine?"
-        ) from exc
-    if not result.get("ok"):
-        raise RuntimeError(result.get("error", "Host Agent call failed"))
-    return result["result"]
+backend = NotesBackend()
 
 
 class ConfirmWrite(BaseModel):
@@ -104,17 +68,17 @@ async def _confirm(ctx: Context, message: str) -> bool:
 
 def get_mail_database_info() -> dict:
     """Resolve and return metadata for the current user's mail database."""
-    return _call_host_agent("get_mail_database_info")
+    return databases.get_mail_database_info(backend)
 
 
 def get_database_info(server_name: str, file_path: str) -> dict:
     """Return basic metadata (title, size, FT-index status) for a database."""
-    return _call_host_agent("get_database_info", server_name=server_name, file_path=file_path)
+    return databases.get_database_info(backend, server_name, file_path)
 
 
 def read_document(server_name: str, file_path: str, unid: str) -> dict:
     """Read one document's fields by UniversalID from any database."""
-    return _call_host_agent("read_document", server_name=server_name, file_path=file_path, unid=unid)
+    return databases.read_document(backend, server_name, file_path, unid)
 
 
 def search_view(
@@ -125,29 +89,22 @@ def search_view(
     columns: list[str] | None = None,
 ) -> list[dict]:
     """List rows from a view/folder in view order (fast index scan)."""
-    return _call_host_agent(
-        "search_view",
-        server_name=server_name,
-        file_path=file_path,
-        view_name=view_name,
-        limit=limit,
-        columns=columns,
-    )
+    return databases.search_view(backend, server_name, file_path, view_name, limit, columns)
 
 
 def list_mail_folders() -> list[dict]:
     """List folders in the current user's mail database."""
-    return _call_host_agent("list_mail_folders")
+    return mail.list_folders(backend)
 
 
 def search_mail(query: str, folder: str = "($Inbox)", limit: int = 20) -> list[dict]:
     """Search the current user's mail (full-text if indexed, else Subject/From substring scan)."""
-    return _call_host_agent("search_mail", query=query, folder=folder, limit=limit)
+    return mail.search_mail(backend, query, folder, limit)
 
 
 def read_mail(unid: str) -> dict:
     """Read one mail document (subject/from/sendto/date/body) by UniversalID."""
-    return _call_host_agent("read_mail", unid=unid)
+    return mail.read_mail(backend, unid)
 
 
 # ---- design tools ---------------------------------------------------------
@@ -155,17 +112,17 @@ def read_mail(unid: str) -> dict:
 
 def list_forms(server_name: str, file_path: str) -> list[dict]:
     """List forms in a database (name, aliases, fields)."""
-    return _call_host_agent("list_forms", server_name=server_name, file_path=file_path)
+    return design.list_forms(backend, server_name, file_path)
 
 
 def list_views(server_name: str, file_path: str) -> list[dict]:
     """List views/folders in a database, including selection formulas and column formulas."""
-    return _call_host_agent("list_views", server_name=server_name, file_path=file_path)
+    return design.list_views(backend, server_name, file_path)
 
 
 def list_agents(server_name: str, file_path: str) -> list[dict]:
     """List agents in a database (name, trigger/target, enabled state, query for query agents)."""
-    return _call_host_agent("list_agents", server_name=server_name, file_path=file_path)
+    return design.list_agents(backend, server_name, file_path)
 
 
 def export_design_dxl(
@@ -179,14 +136,8 @@ def export_design_dxl(
     """Export selected design notes as DXL (XML), including full agent
     LotusScript/formula source and form/view formulas. Requires Designer-level
     ACL access on the target database."""
-    return _call_host_agent(
-        "export_design_dxl",
-        server_name=server_name,
-        file_path=file_path,
-        include_forms=include_forms,
-        include_views=include_views,
-        include_agents=include_agents,
-        name_filter=name_filter,
+    return design.export_design_dxl(
+        backend, server_name, file_path, include_forms, include_views, include_agents, name_filter
     )
 
 
@@ -209,7 +160,7 @@ async def create_document(
     )
     if not ok:
         return {"status": "cancelled"}
-    return _call_host_agent("create_document", server_name=server_name, file_path=file_path, form=form, fields=fields)
+    return write.create_document(backend, server_name, file_path, form, fields)
 
 
 async def update_document(
@@ -229,7 +180,7 @@ async def update_document(
     )
     if not ok:
         return {"status": "cancelled"}
-    return _call_host_agent("update_document", server_name=server_name, file_path=file_path, unid=unid, fields=fields)
+    return write.update_document(backend, server_name, file_path, unid, fields)
 
 
 async def send_mail(sendto: str, subject: str, body: str, ctx: Context) -> dict:
@@ -241,7 +192,7 @@ async def send_mail(sendto: str, subject: str, body: str, ctx: Context) -> dict:
     )
     if not ok:
         return {"status": "cancelled"}
-    return _call_host_agent("send_mail", sendto=sendto, subject=subject, body=body)
+    return write.send_mail(backend, sendto, subject, body)
 
 
 # ---- registration ----------------------------------------------------------
@@ -276,11 +227,19 @@ def register_tools(profile: str) -> None:
 def main(profile: str | None = None) -> None:
     profile = profile or os.environ.get("NOTES_MCP_PROFILE", "read")
     register_tools(profile)
-    print(
-        f"notes-client-mcp relay: profile={profile!r}, forwarding to Host Agent at {HOST_AGENT_URL}",
-        file=sys.stderr,
-    )
-    server.run("stdio")
+
+    print("notes-client-mcp: connecting to HCL Notes...", file=sys.stderr)
+    try:
+        username = backend.connect()
+    except NotesConnectionError as exc:
+        print(f"notes-client-mcp: failed to connect: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    print(f"notes-client-mcp: connected as {username!r}, profile={profile!r}", file=sys.stderr)
+
+    try:
+        server.run("stdio")
+    finally:
+        backend.shutdown()
 
 
 def main_read() -> None:

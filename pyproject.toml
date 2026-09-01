@@ -11,9 +11,8 @@ dependencies = [
 ]
 
 [project.scripts]
-# Host Agent: native, 32-bit, holds the COM session (see README.md).
-notes-host-agent = "notes_mcp.host_agent:main"
-# MCP Relay, one command per tool-tier profile (all talk to the same Host Agent):
+# One command per tool-tier profile - see README.md for which to register
+# with your MCP client. Each is a full, standalone process (COM + MCP stdio).
 notes-client-mcp = "notes_mcp.server:main_read"
 notes-client-mcp-design = "notes_mcp.server:main_design"
 notes-client-mcp-write = "notes_mcp.server:main_write"
