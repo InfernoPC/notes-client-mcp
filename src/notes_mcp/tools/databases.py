@@ -78,14 +78,30 @@ def search_view(
     columns: list[str] | None = None,
 ) -> list[dict]:
     """Walk a view's documents in view order and return column values (fast,
-    uses the view index - does not open each document)."""
+    uses the view index - does not open each document). `columns`, if given,
+    selects a subset by title/item-name rather than renaming positionally."""
 
     def _op(session):
         db = open_database(session, server, file_path)
         view = db.GetView(view_name)
         if view is None:
             raise ValueError(f"No view named {view_name!r}")
-        col_names = columns or [c.Title or c.ItemName for c in view.Columns if not c.IsIcon]
+
+        # (name, position) pairs from the view's real column order. Icon
+        # columns still occupy a slot in entry.ColumnValues - dropping them
+        # from the name list without keeping their original index silently
+        # misaligns every later column's name with the wrong value. Confirmed
+        # by hand on a real view with an icon column in the middle: that bug
+        # produced e.g. "server" -> an icon status code, "filepath" -> the
+        # real server name, "title" -> the real filepath, and dropped the
+        # real description entirely.
+        all_cols = [(c.Title or c.ItemName, i) for i, c in enumerate(view.Columns) if not c.IsIcon]
+        if columns:
+            wanted = set(columns)
+            col_defs = [(name, idx) for name, idx in all_cols if name in wanted]
+        else:
+            col_defs = all_cols
+
         out = []
         nav = view.CreateViewNav()
         entry = nav.GetFirst()
@@ -93,9 +109,7 @@ def search_view(
         while entry is not None and count < limit:
             if entry.IsDocument:
                 values = entry.ColumnValues
-                row = {}
-                for i, name in enumerate(col_names):
-                    row[name] = values[i] if i < len(values) else None
+                row = {name: (values[idx] if idx < len(values) else None) for name, idx in col_defs}
                 row["unid"] = entry.UniversalID
                 out.append(row)
                 count += 1
