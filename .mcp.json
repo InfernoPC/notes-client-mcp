@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "notes-client": {
+      "type": "stdio",
+      "command": "C:\\Users\\timchen\\.pyenv\\pyenv-win\\versions\\3.13.1-win32\\python.exe",
+      "args": [
+        "-m",
+        "notes_mcp.server"
+      ],
+      "env": {}
+    }
+  }
+}

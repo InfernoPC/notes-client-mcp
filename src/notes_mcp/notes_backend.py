@@ -1,0 +1,101 @@
+"""Backend (headless) HCL Notes automation.
+
+Deliberately uses only the backend `NotesSession`/`NotesDatabase` object model
+(the same classes LotusScript agents use) via the `Lotus.NotesSession` COM
+ProgID. It never touches `Notes.NotesUIWorkspace` or any other UI-driving
+object: an earlier spike showed that driving the live client UI (e.g.
+`NotesUIWorkspace.OpenDatabase` on a database already open in the client) can
+trigger the mail template's own LotusScript event handlers and crash
+NLNOTES.exe (reproduced: ACCESS_VIOLATION inside Notes 9.0.1's OLE Automation
+error-handling path). Staying on the backend session avoids the client UI
+entirely, so it cannot trigger that class of failure.
+"""
+
+from __future__ import annotations
+
+import getpass
+from dataclasses import dataclass
+from typing import Callable, TypeVar
+
+import win32com.client
+
+from .sta_worker import StaWorker
+
+T = TypeVar("T")
+
+
+class NotesConnectionError(RuntimeError):
+    pass
+
+
+@dataclass
+class MailAddress:
+    server: str
+    file_path: str
+
+
+class NotesBackend:
+    """One backend NotesSession, owned by a dedicated STA thread.
+
+    Call connect() once at process startup (password is read once via
+    getpass and kept only in this process's memory - never written to disk,
+    never passed through the MCP protocol). After that, every tool call runs
+    through run()/get_database() on the same STA thread.
+    """
+
+    def __init__(self) -> None:
+        self._worker = StaWorker()
+        self._session = None
+
+    def connect(self, password: str | None = None) -> str:
+        if password is None:
+            password = getpass.getpass("HCL Notes ID 密碼 (不會顯示、不會存檔): ")
+
+        def _connect():
+            session = win32com.client.Dispatch("Lotus.NotesSession")
+            session.Initialize(password)
+            return session
+
+        try:
+            self._session = self._worker.call(_connect)
+        except Exception as exc:  # noqa: BLE001
+            raise NotesConnectionError(f"Notes session Initialize failed: {exc}") from exc
+        return self.run(lambda s: s.UserName)
+
+    @property
+    def connected(self) -> bool:
+        return self._session is not None
+
+    def _require_session(self):
+        if self._session is None:
+            raise NotesConnectionError("Not connected - call connect() first")
+        return self._session
+
+    def run(self, fn: "Callable[[object], T]") -> T:
+        """Run fn(session) on the STA thread and return its result."""
+        session = self._require_session()
+        return self._worker.call(lambda: fn(session))
+
+    def get_mail_address(self) -> MailAddress:
+        def _resolve(session):
+            server = session.GetEnvironmentString("MailServer", True)
+            file_path = session.GetEnvironmentString("MailFile", True)
+            return MailAddress(server=server, file_path=file_path)
+
+        return self.run(_resolve)
+
+    def shutdown(self) -> None:
+        self._worker.shutdown()
+
+
+def open_database(session, server: str, file_path: str):
+    """Open a NotesDatabase. Only call this from inside a function passed to
+    NotesBackend.run() - `session` and the returned NotesDatabase are raw COM
+    objects that are only safe to use on the STA thread that produced them.
+    Never return them out of the run() closure; extract plain data instead."""
+    db = session.GetDatabase(server, file_path)
+    if db is None:
+        raise NotesConnectionError(f"Database not found: {server!r} {file_path!r}")
+    if not db.IsOpen:
+        db.Open()
+    return db
