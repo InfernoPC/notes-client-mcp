@@ -125,6 +125,14 @@ Read (`read` profile):
 
 Design (`design` profile, adds):
 - `list_forms`, `list_views` (incl. selection formulas + column formulas), `list_agents`
+- `list_view_categories(server_name, file_path, view_name, max_level)` — a
+  categorized view's own category values, without touching any document
+  entries regardless of view size (confirmed by hand:
+  `NotesViewNavigator.MaxLevel` + `GetNextCategory()` correctly skip every
+  document at any depth). Since a categorized column is very often a
+  formula rather than a plain field, these are the view's own
+  rendered/computed values - use them directly with `find_document_by_key`
+  rather than guessing at a document's stored field.
 - `list_design_elements(server_name, file_path, kind)` — name-based listing
   for design note kinds without their own typed tool: `subforms`,
   `outlines`, `pages`, `framesets`, `script_libraries`, `shared_fields`,

@@ -144,6 +144,16 @@ def list_views(server_name: str, file_path: str) -> list[dict]:
     return design.list_views(backend, server_name, file_path)
 
 
+def list_view_categories(server_name: str, file_path: str, view_name: str, max_level: int = 0) -> list[dict]:
+    """List a categorized view's own category values (not raw document
+    fields - the categorized column is very often a formula), without
+    touching any document entries regardless of view size. max_level=0 is
+    top-level only; increase to include deeper category levels (e.g. 1 for
+    a "Cat1\\Cat2"-style categorized column). Use the returned values
+    directly with find_document_by_key."""
+    return design.list_view_categories(backend, server_name, file_path, view_name, max_level)
+
+
 def list_agents(server_name: str, file_path: str) -> list[dict]:
     """List agents in a database (name, trigger/target, enabled state, query for query agents)."""
     return design.list_agents(backend, server_name, file_path)
@@ -245,6 +255,7 @@ _TOOL_FUNCS: dict[str, object] = {
     "search_database": search_database,
     "list_forms": list_forms,
     "list_views": list_views,
+    "list_view_categories": list_view_categories,
     "list_agents": list_agents,
     "list_design_elements": list_design_elements,
     "get_database_settings": get_database_settings,

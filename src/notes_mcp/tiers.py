@@ -18,6 +18,7 @@ TOOL_TAGS: dict[str, frozenset[str]] = {
     "search_database": frozenset({"read"}),
     "list_forms": frozenset({"design"}),
     "list_views": frozenset({"design"}),
+    "list_view_categories": frozenset({"design"}),
     "list_agents": frozenset({"design"}),
     "list_design_elements": frozenset({"design"}),
     "get_database_settings": frozenset({"design"}),

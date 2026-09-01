@@ -132,6 +132,48 @@ def list_views(backend: NotesBackend, server: str, file_path: str) -> list[dict]
     return backend.run(_op)
 
 
+def list_view_categories(
+    backend: NotesBackend,
+    server: str,
+    file_path: str,
+    view_name: str,
+    max_level: int = 0,
+) -> list[dict]:
+    """Walk only the category-header entries of a categorized view - never
+    touches document entries, regardless of view size. Confirmed by hand:
+    NotesViewNavigator.MaxLevel + GetNextCategory() correctly skip every
+    document entry at any depth (12+ calls of GetNextCategory in a row on a
+    468-document view, zero document entries encountered).
+
+    `max_level` controls depth: 0 = top-level categories only; 1 = also
+    include a second level (e.g. a "Cat1\\Cat2"-style categorized column),
+    and so on. The values returned are the view's own rendered/computed
+    column value for that category - not a raw document field (a
+    categorized column is very often a formula, not a plain field) - so use
+    these values directly with find_document_by_key rather than guessing at
+    what a document's stored field looks like.
+    """
+
+    def _op(session):
+        db = open_database(session, server, file_path)
+        view = db.GetView(view_name)
+        if view is None:
+            raise ValueError(f"No view named {view_name!r}")
+        nav = view.CreateViewNav()
+        nav.MaxLevel = max_level
+
+        out = []
+        entry = nav.GetFirst()
+        while entry is not None:
+            if entry.IsCategory:
+                values = entry.ColumnValues
+                out.append({"value": values[0] if values else None, "indent_level": entry.IndentLevel})
+            entry = nav.GetNextCategory(entry)
+        return out
+
+    return backend.run(_op)
+
+
 def list_agents(backend: NotesBackend, server: str, file_path: str) -> list[dict]:
     def _op(session):
         db = open_database(session, server, file_path)

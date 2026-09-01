@@ -100,6 +100,11 @@ Read（`read` profile）：
 
 Design（`design` profile，額外新增）：
 - `list_forms`、`list_views`（含 selection formula + 欄位公式）、`list_agents`
+- `list_view_categories(server_name, file_path, view_name, max_level)`——分類過的
+  view 自己的分類值，不管 view 多大都完全不碰任何文件（已實測確認：
+  `NotesViewNavigator.MaxLevel` + `GetNextCategory()` 在任何深度都能正確跳過所有文件）。
+  因為分類欄位常常是公式算出來的，不是單純欄位，這裡回傳的是 view 自己算出來、實際拿去分組用的值——
+  可以直接拿去餵 `find_document_by_key`，不用自己猜文件裡存的欄位長怎樣。
 - `list_design_elements(server_name, file_path, kind)`——列出沒有專屬 tool 的設計元素種類，用名稱
   列表：`subforms`、`outlines`、`pages`、`framesets`、`script_libraries`、`shared_fields`、
   `database_script`、`navigators`、`image_resources`、`java_resources`、`stylesheet_resources`、
