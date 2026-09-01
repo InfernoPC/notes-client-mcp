@@ -39,19 +39,25 @@ the same process. No separate server to start, no ports, no Docker — just a
 
 - `pip install -e .` from this directory using that interpreter.
 
-## Password: `.env` or interactive
+## Password: `.env` is required when run via an MCP client
 
-Copy `.env.example` to `.env` in the project root and set `NOTES_PASSWORD`.
-**This stores your Notes ID password in plaintext on disk** — a deliberate
-convenience-over-security trade-off. `.env` is gitignored; never commit it,
-share it, or let it leave this machine. Leave `NOTES_PASSWORD` unset (no
-`.env`, or an empty value) to fall back to an interactive `getpass()` prompt
-instead, which never touches disk — but note that prompt only works if your
-MCP client gives the spawned process an interactive console, which isn't
-guaranteed; `.env` is the reliable option.
+Copy `.env.example` to `.env` in the project root and set `NOTES_PASSWORD`
+**before** registering this with any MCP client. **This stores your Notes ID
+password in plaintext on disk** — a deliberate convenience-over-security
+trade-off. `.env` is gitignored; never commit it, share it, or let it leave
+this machine.
 
-**A password (interactive or via `.env`) only ever lives on this machine.**
-Never put it into a Claude Desktop / GitHub Copilot MCP config file.
+There's also an interactive `getpass()` fallback for when `NOTES_PASSWORD`
+is unset, but **confirmed by hand that it cannot work when the MCP client
+spawns this process**: the client owns stdin entirely for the JSON-RPC
+stream, so `getpass()` blocks forever waiting for input that can never
+arrive, and the client eventually kills it as a connection timeout. That
+fallback only works if you run `python -m notes_mcp.server` yourself,
+directly, in your own terminal (e.g. for the smoke test below) - never
+through an MCP client without `.env` set.
+
+**The password only ever lives on this machine.** Never put it into a
+Claude Desktop / GitHub Copilot MCP config file.
 
 ## Registering with your MCP client
 

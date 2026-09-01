@@ -33,16 +33,19 @@ Docker——就是像 `mcp-server-git` 那樣單純的 `command`/`args` 設定�
 
 - 在這個目錄下，用該直譯器跑 `pip install -e .`。
 
-## 密碼：`.env` 或互動輸入
+## 密碼：透過 MCP client 執行時，`.env` 是必要的
 
-把 `.env.example` 複製成專案根目錄下的 `.env`，設定 `NOTES_PASSWORD`。**這會把你的 Notes ID 密碼
-以明文存在磁碟上**——這是刻意選擇「方便優先於安全」的取捨。`.env` 已加進 `.gitignore`；絕對不要把
-它提交、分享，或讓它離開這台機器。若不設定 `NOTES_PASSWORD`（沒有 `.env`，或留空），則會退回互動式
-的 `getpass()` 提示，完全不落地——但要注意這個提示能不能正常運作，取決於你的 MCP client 有沒有給
-被啟動的 process 一個可互動的 console，這點沒有保證；`.env` 才是可靠的做法。
+在把這個工具註冊進任何 MCP client **之前**，先把 `.env.example` 複製成專案根目錄下的 `.env`，設定
+`NOTES_PASSWORD`。**這會把你的 Notes ID 密碼以明文存在磁碟上**——這是刻意選擇「方便優先於安全」的
+取捨。`.env` 已加進 `.gitignore`；絕對不要把它提交、分享，或讓它離開這台機器。
 
-**密碼（不論是互動輸入還是透過 `.env`）永遠只存在於這台機器上。**絕對不要把它放進 Claude Desktop /
-GitHub Copilot 的 MCP 設定檔裡。
+雖然還有一個 `NOTES_PASSWORD` 沒設時的互動式 `getpass()` fallback，但**已經實測確認：由 MCP
+client 啟動這個 process 時，這個 fallback 完全無法運作**——client 會把 stdin 整個拿去跑
+JSON-RPC 串流，導致 `getpass()` 永遠卡住等一個不會出現的輸入，最後被 client 判定連線逾時、直接
+砍掉這個 process。這個 fallback 只有在你自己直接手動跑 `python -m notes_mcp.server`（例如下面的
+煙霧測試）時才有用——**透過 MCP client 啟動、又沒設定 `.env` 的情況下絕對不會成功**。
+
+**密碼永遠只存在於這台機器上。**絕對不要把它放進 Claude Desktop / GitHub Copilot 的 MCP 設定檔裡。
 
 ## 註冊進你的 MCP client
 
