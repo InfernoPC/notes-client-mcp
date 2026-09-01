@@ -100,8 +100,24 @@ Read（`read` profile）：
 
 Design（`design` profile，額外新增）：
 - `list_forms`、`list_views`（含 selection formula + 欄位公式）、`list_agents`
-- `export_design_dxl`——完整匯出 form/view/agent 的 DXL（XML），含 agent 的 LotusScript/公式原始碼。
-  需要目標資料庫的 Designer 層級 ACL 權限。
+- `list_design_elements(server_name, file_path, kind)`——列出沒有專屬 tool 的設計元素種類，用名稱
+  列表：`subforms`、`outlines`、`pages`、`framesets`、`script_libraries`、`shared_fields`、
+  `database_script`、`navigators`、`image_resources`、`java_resources`、`stylesheet_resources`、
+  `data_connections`、`replication_formulas`、`profiles`、`folders`、`acl`、`icon`、`help_about`、
+  `help_using`（每一個都已對著真實資料庫實測過——有幾個看起來合理的候選，例如把 `shared_actions`
+  當成獨立 kind、composite applications/components、web pages、XSLTs，在這個 Domino 版本的
+  `NotesNoteCollection` API 上不存在，故意沒放進去，而不是放進去卻悄悄壞掉）。`actions`（shared
+  actions）是單一一筆彙總 note，沒辦法用這個方式逐筆列出——要看內容請用
+  `export_design_dxl(kinds=["actions"])`。
+- `get_database_settings(server_name, file_path)`——分類、design template 名稱、replica ID、
+  配額/使用率、managers、document/design locking、multi-db search、address book 旗標、
+  pending-delete 狀態。
+- `list_acl(server_name, file_path)`——資料庫定義的角色，以及每個 entry 的名稱/存取等級（標準
+  Domino 0-6 分級，附可讀名稱）/角色/幾個常見的能力旗標。
+- `export_design_dxl(server_name, file_path, kinds, name_filter)`——完整匯出上面任何種類的 DXL
+  （XML）（預設 `["forms", "views", "agents"]`），含 agent 的 LotusScript/公式原始碼、form/view
+  公式，以及 `list_design_elements` 沒辦法逐筆列出的種類（例如 `actions`）的完整內容。需要目標
+  資料庫的 Designer 層級 ACL 權限。
 
 Write（`write` profile，額外新增——**每一個都會先透過 MCP elicitation 跳出互動確認才會真的寫入**，
 所以你的 MCP client 需要支援 elicitation 這些 tool 才能正常運作）：

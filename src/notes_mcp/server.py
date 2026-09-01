@@ -149,20 +149,46 @@ def list_agents(server_name: str, file_path: str) -> list[dict]:
     return design.list_agents(backend, server_name, file_path)
 
 
+def list_design_elements(server_name: str, file_path: str, kind: str) -> list[dict]:
+    """List design notes of one kind by name, for kinds without a typed
+    listing tool of their own (list_forms/list_views/list_agents cover
+    those). Valid kind values: forms, views, folders, agents, subforms,
+    outlines, pages, framesets, script_libraries, shared_fields, actions,
+    database_script, navigators, image_resources, java_resources,
+    stylesheet_resources, data_connections, replication_formulas, profiles,
+    acl, icon, help_about, help_using. "actions" (shared actions) is a
+    single aggregate note, not individually listable - use
+    export_design_dxl(kinds=["actions"]) for its contents instead."""
+    return design.list_design_elements(backend, server_name, file_path, kind)
+
+
+def get_database_settings(server_name: str, file_path: str) -> dict:
+    """Database-level settings beyond get_database_info: categories, design
+    template, replica ID, quota/usage, managers, document/design locking,
+    multi-db search, address-book flags, pending-delete state."""
+    return design.get_database_settings(backend, server_name, file_path)
+
+
+def list_acl(server_name: str, file_path: str) -> dict:
+    """Database ACL: defined roles, and each entry's name, access level
+    (standard Domino 0-6 scale, with a human-readable name), roles, and a
+    couple of common capability flags."""
+    return design.list_acl(backend, server_name, file_path)
+
+
 def export_design_dxl(
     server_name: str,
     file_path: str,
-    include_forms: bool = True,
-    include_views: bool = True,
-    include_agents: bool = True,
+    kinds: list[str] | None = None,
     name_filter: str | None = None,
 ) -> str:
     """Export selected design notes as DXL (XML), including full agent
-    LotusScript/formula source and form/view formulas. Requires Designer-level
-    ACL access on the target database."""
-    return design.export_design_dxl(
-        backend, server_name, file_path, include_forms, include_views, include_agents, name_filter
-    )
+    LotusScript/formula source, form/view formulas, and (for kinds without
+    individual listing, like "actions"/shared actions) their full contents.
+    `kinds` defaults to ["forms", "views", "agents"] - see
+    list_design_elements's docstring for every valid value. Requires
+    Designer-level ACL access on the target database."""
+    return design.export_design_dxl(backend, server_name, file_path, kinds, name_filter)
 
 
 # ---- write tools (each requires interactive confirmation) ----------------
@@ -220,6 +246,9 @@ _TOOL_FUNCS: dict[str, object] = {
     "list_forms": list_forms,
     "list_views": list_views,
     "list_agents": list_agents,
+    "list_design_elements": list_design_elements,
+    "get_database_settings": get_database_settings,
+    "list_acl": list_acl,
     "export_design_dxl": export_design_dxl,
     "create_document": create_document,
     "update_document": update_document,

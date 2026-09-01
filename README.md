@@ -125,9 +125,31 @@ Read (`read` profile):
 
 Design (`design` profile, adds):
 - `list_forms`, `list_views` (incl. selection formulas + column formulas), `list_agents`
-- `export_design_dxl` — full DXL (XML) export of forms/views/agents, including
-  agent LotusScript/formula source. Requires Designer-level ACL access on the
-  target database.
+- `list_design_elements(server_name, file_path, kind)` — name-based listing
+  for design note kinds without their own typed tool: `subforms`,
+  `outlines`, `pages`, `framesets`, `script_libraries`, `shared_fields`,
+  `database_script`, `navigators`, `image_resources`, `java_resources`,
+  `stylesheet_resources`, `data_connections`, `replication_formulas`,
+  `profiles`, `folders`, `acl`, `icon`, `help_about`, `help_using` (every
+  value confirmed by hand against a real database - a handful of plausible
+  extras, e.g. `shared_actions` as its own kind, composite
+  applications/components, web pages, XSLTs, don't exist on this Domino
+  version's `NotesNoteCollection` API and were left out rather than
+  included and silently broken). `actions` (shared actions) is a single
+  aggregate note, not individually listable this way - use
+  `export_design_dxl(kinds=["actions"])` for its contents.
+- `get_database_settings(server_name, file_path)` — categories, design
+  template name, replica ID, quota/usage, managers, document/design
+  locking, multi-db search, address-book flags, pending-delete state.
+- `list_acl(server_name, file_path)` — defined roles, and each entry's
+  name/access level (standard Domino 0-6 scale with a readable name)/roles/
+  a couple of common capability flags.
+- `export_design_dxl(server_name, file_path, kinds, name_filter)` — full DXL
+  (XML) export of any of the kinds above (default
+  `["forms", "views", "agents"]`), including agent LotusScript/formula
+  source, form/view formulas, and full contents for kinds that
+  `list_design_elements` can't enumerate individually (like `actions`).
+  Requires Designer-level ACL access on the target database.
 
 Write (`write` profile, adds — **each asks for interactive confirmation via
 MCP elicitation before writing anything**, so the MCP client needs to support

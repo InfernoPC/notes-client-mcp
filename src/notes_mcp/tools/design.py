@@ -1,15 +1,54 @@
 """Read-only tools for inspecting NSF design elements: forms, views (incl.
-selection formulas), agents, and full DXL export.
+selection formulas), agents, other design note kinds, database settings,
+ACL, and full DXL export.
 
 DXL export of design notes requires at least Designer-level ACL access to
 the target database - a plain Reader/Editor role can be refused by the
 server even though this same code works fine for data documents. That is a
 database ACL limitation, not something this tool can work around.
+
+Standard Domino ACL access levels (stable/documented, unlike most of the
+COM surface used elsewhere in this file - not verified by hand, but this
+numbering has been unchanged since early Domino):
+0=No Access, 1=Depositor, 2=Reader, 3=Author, 4=Editor, 5=Designer, 6=Manager
 """
 
 from __future__ import annotations
 
 from ..notes_backend import NotesBackend, open_database
+
+# NotesNoteCollection.SelectXxx flags, confirmed by hand against a real
+# database (each of these successfully set to True on Lotus.NotesSession's
+# CreateNoteCollection; a few plausible extras - SelectSharedActions,
+# SelectCompositeApplications/Components, SelectWebPages, SelectXSLTs,
+# SelectFormats - do NOT exist on this Domino version and raised
+# "Property ... can not be set", so they're deliberately left out rather
+# than included and silently broken.
+_NOTE_KIND_FLAGS: dict[str, str] = {
+    "forms": "SelectForms",
+    "views": "SelectViews",
+    "folders": "SelectFolders",
+    "agents": "SelectAgents",
+    "subforms": "SelectSubforms",
+    "outlines": "SelectOutlines",
+    "pages": "SelectPages",
+    "framesets": "SelectFramesets",
+    "script_libraries": "SelectScriptLibraries",
+    "shared_fields": "SelectSharedFields",
+    "actions": "SelectActions",  # shared actions: one aggregate note, not individually listable - use export_design_dxl to see contents
+    "database_script": "SelectDatabaseScript",
+    "navigators": "SelectNavigators",
+    "image_resources": "SelectImageResources",
+    "java_resources": "SelectJavaResources",
+    "stylesheet_resources": "SelectStylesheetResources",
+    "data_connections": "SelectDataConnections",
+    "replication_formulas": "SelectReplicationFormulas",
+    "profiles": "SelectProfiles",
+    "acl": "SelectAcl",
+    "icon": "SelectIcon",
+    "help_about": "SelectHelpAbout",
+    "help_using": "SelectHelpUsing",
+}
 
 
 def _export_dxl(session, nc) -> str:
@@ -121,24 +160,130 @@ def list_agents(backend: NotesBackend, server: str, file_path: str) -> list[dict
     return backend.run(_op)
 
 
+def list_design_elements(
+    backend: NotesBackend,
+    server: str,
+    file_path: str,
+    kind: str,
+) -> list[dict]:
+    """List design notes of one kind by name - for kinds without a typed
+    collection like Forms/Views/Agents (subforms, outlines, pages,
+    framesets, script libraries, shared fields, database script,
+    navigators, resources, ...). See design.py's _NOTE_KIND_FLAGS for the
+    full set of valid `kind` values. "actions" (shared actions) is a single
+    aggregate note, not individually listable this way - use
+    export_design_dxl(kinds=["actions"]) to see its contents instead."""
+
+    def _op(session):
+        flag = _NOTE_KIND_FLAGS.get(kind)
+        if flag is None:
+            raise ValueError(f"Unknown kind {kind!r}, must be one of {sorted(_NOTE_KIND_FLAGS)}")
+        db = open_database(session, server, file_path)
+        nc = db.CreateNoteCollection(False)
+        setattr(nc, flag, True)
+        nc.BuildCollection()
+
+        out = []
+        note_id = nc.GetFirstNoteID()
+        while note_id:
+            doc = db.GetDocumentByID(note_id)
+            title_values = doc.GetItemValue("$TITLE") if doc.HasItem("$TITLE") else []
+            title = title_values[0] if title_values else ""
+            name, _, alias = title.partition("|")
+            out.append(
+                {
+                    "name": name or title,
+                    "aliases": [alias] if alias else [],
+                    "note_id": note_id,
+                    "unid": doc.UniversalID,
+                }
+            )
+            note_id = nc.GetNextNoteID(note_id)
+        return out
+
+    return backend.run(_op)
+
+
+def get_database_settings(backend: NotesBackend, server: str, file_path: str) -> dict:
+    """Database-level settings/properties beyond the basics in
+    get_database_info - all confirmed by hand against a real database."""
+
+    def _op(session):
+        db = open_database(session, server, file_path)
+        return {
+            "title": db.Title,
+            "categories": db.Categories,
+            "design_template_name": db.DesignTemplateName,
+            "replica_id": db.ReplicaID,
+            "created": str(db.Created),
+            "last_modified": str(db.LastModified),
+            "size_bytes": db.Size,
+            "size_quota": db.SizeQuota,
+            "percent_used": db.PercentUsed,
+            "managers": list(db.Managers),
+            "is_ft_indexed": db.IsFTIndexed,
+            "last_ft_indexed": str(db.LastFTIndexed),
+            "is_document_locking_enabled": db.IsDocumentLockingEnabled,
+            "is_design_locking_enabled": db.IsDesignLockingEnabled,
+            "is_multi_db_search": db.IsMultiDbSearch,
+            "is_private_address_book": db.IsPrivateAddressBook,
+            "is_public_address_book": db.IsPublicAddressBook,
+            "is_pending_delete": db.IsPendingDelete,
+        }
+
+    return backend.run(_op)
+
+
+def list_acl(backend: NotesBackend, server: str, file_path: str) -> dict:
+    """Database ACL: defined roles, and each entry's name/access level/roles.
+    Access level is the standard Domino 0-6 scale - see module docstring."""
+
+    _LEVEL_NAMES = {0: "No Access", 1: "Depositor", 2: "Reader", 3: "Author", 4: "Editor", 5: "Designer", 6: "Manager"}
+
+    def _op(session):
+        db = open_database(session, server, file_path)
+        acl = db.ACL
+        entries = []
+        entry = acl.GetFirstEntry()
+        while entry is not None:
+            entries.append(
+                {
+                    "name": entry.Name,
+                    "level": entry.Level,
+                    "level_name": _LEVEL_NAMES.get(entry.Level, "Unknown"),
+                    "roles": list(entry.Roles) if entry.Roles else [],
+                    "can_create_documents": entry.CanCreateDocuments,
+                    "is_public_reader": entry.IsPublicReader,
+                }
+            )
+            entry = acl.GetNextEntry(entry)
+        return {"roles": list(acl.Roles) if acl.Roles else [], "entries": entries}
+
+    return backend.run(_op)
+
+
 def export_design_dxl(
     backend: NotesBackend,
     server: str,
     file_path: str,
-    include_forms: bool = True,
-    include_views: bool = True,
-    include_agents: bool = True,
+    kinds: list[str] | None = None,
     name_filter: str | None = None,
 ) -> str:
     """Export selected design notes as one DXL (XML) document, including
-    full agent LotusScript/formula source and form/view formulas."""
+    full agent LotusScript/formula source, form/view formulas, and (for
+    kinds without individual listing, like "actions"/shared actions) their
+    full contents. `kinds` defaults to ["forms", "views", "agents"]; see
+    design.py's _NOTE_KIND_FLAGS for every valid value."""
 
     def _op(session):
+        selected = kinds or ["forms", "views", "agents"]
         db = open_database(session, server, file_path)
         nc = db.CreateNoteCollection(False)
-        nc.SelectForms = include_forms
-        nc.SelectViews = include_views
-        nc.SelectAgents = include_agents
+        for kind in selected:
+            flag = _NOTE_KIND_FLAGS.get(kind)
+            if flag is None:
+                raise ValueError(f"Unknown kind {kind!r}, must be one of {sorted(_NOTE_KIND_FLAGS)}")
+            setattr(nc, flag, True)
         if name_filter:
             nc.SelectionFormula = f'@Contains(@LowerCase($TITLE); "{name_filter.lower()}")'
         nc.BuildCollection()
