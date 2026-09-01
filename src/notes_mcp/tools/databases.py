@@ -47,28 +47,94 @@ def get_database_info(backend: NotesBackend, server: str, file_path: str) -> dic
     return backend.run(_op)
 
 
+def _document_to_dict(doc) -> dict:
+    items = {}
+    for item in doc.Items:
+        try:
+            items[item.Name] = item.Text if hasattr(item, "Text") else doc.GetItemValue(item.Name)
+        except Exception:  # noqa: BLE001 - some item types don't support .Text via COM
+            try:
+                items[item.Name] = list(doc.GetItemValue(item.Name))
+            except Exception:  # noqa: BLE001
+                items[item.Name] = None
+    return {
+        "unid": doc.UniversalID,
+        "form": doc.GetItemValue("Form")[0] if doc.HasItem("Form") else None,
+        "created": str(doc.Created),
+        "last_modified": str(doc.LastModified),
+        "items": items,
+    }
+
+
 def read_document(backend: NotesBackend, server: str, file_path: str, unid: str) -> dict:
     def _op(session):
         db = open_database(session, server, file_path)
         doc = db.GetDocumentByUNID(unid)
         if doc is None:
             raise ValueError(f"No document with UNID {unid!r}")
-        items = {}
-        for item in doc.Items:
-            try:
-                items[item.Name] = item.Text if hasattr(item, "Text") else doc.GetItemValue(item.Name)
-            except Exception:  # noqa: BLE001 - some item types don't support .Text via COM
-                try:
-                    items[item.Name] = list(doc.GetItemValue(item.Name))
-                except Exception:  # noqa: BLE001
-                    items[item.Name] = None
-        return {
-            "unid": doc.UniversalID,
-            "form": doc.GetItemValue("Form")[0] if doc.HasItem("Form") else None,
-            "created": str(doc.Created),
-            "last_modified": str(doc.LastModified),
-            "items": items,
-        }
+        return _document_to_dict(doc)
+
+    return backend.run(_op)
+
+
+def find_document_by_key(
+    backend: NotesBackend,
+    server: str,
+    file_path: str,
+    view_name: str,
+    key: str | list[str],
+    exact: bool = True,
+) -> dict | None:
+    """Fast lookup by a view's sorted column(s), using the view index -
+    NotesView.GetDocumentByKey(key, exact). `key` matches a single sorted
+    column, or pass a list to match a categorized view's leading columns in
+    order. `exact=False` allows a prefix/partial match. Returns None (not an
+    error) if nothing matches - prefer this over search_database when the
+    lookup value is a real column in an existing view."""
+
+    def _op(session):
+        db = open_database(session, server, file_path)
+        view = db.GetView(view_name)
+        if view is None:
+            raise ValueError(f"No view named {view_name!r}")
+        doc = view.GetDocumentByKey(key, exact)
+        return _document_to_dict(doc) if doc is not None else None
+
+    return backend.run(_op)
+
+
+def search_database(
+    backend: NotesBackend,
+    server: str,
+    file_path: str,
+    formula: str,
+    max_docs: int = 50,
+) -> list[dict]:
+    """Search a database with a Notes @formula (NotesDatabase.Search) -
+    evaluates the formula against every document rather than using a view
+    index, so it is much slower than search_view/find_document_by_key.
+    Prefer those when the data you need is already exposed by an existing
+    view; use this only when no suitable view exists. max_docs caps the
+    result size (and roughly the work done) since a broad formula can match
+    a very large fraction of the database."""
+
+    def _op(session):
+        db = open_database(session, server, file_path)
+        collection = db.Search(formula, None, max_docs)
+        # db.Search's maxdocs argument only caps collection.Count - confirmed
+        # by hand that iterating via GetFirstDocument/GetNextDocument walks
+        # every matching document regardless (maxdocs=3 against 56 matches
+        # still yielded all 56 through the iterator, though .Count correctly
+        # reported 3). Cap the loop explicitly instead of trusting the
+        # collection to stop on its own.
+        out = []
+        doc = collection.GetFirstDocument()
+        count = 0
+        while doc is not None and (max_docs <= 0 or count < max_docs):
+            out.append(_document_to_dict(doc))
+            doc = collection.GetNextDocument(doc)
+            count += 1
+        return out
 
     return backend.run(_op)
 

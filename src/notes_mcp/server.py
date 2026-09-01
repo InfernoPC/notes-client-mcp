@@ -107,6 +107,29 @@ def export_view_csv(
     return databases.export_view_csv(backend, server_name, file_path, view_name, output_path, columns, limit)
 
 
+def find_document_by_key(
+    server_name: str,
+    file_path: str,
+    view_name: str,
+    key: str | list[str],
+    exact: bool = True,
+) -> dict | None:
+    """Fast lookup by a view's sorted column(s) (uses the view index). Pass a
+    list for `key` to match a categorized view's leading columns in order.
+    `exact=False` allows a prefix/partial match. Returns null if nothing
+    matches. Prefer this over search_database when the value you're looking
+    up is a real column in an existing view."""
+    return databases.find_document_by_key(backend, server_name, file_path, view_name, key, exact)
+
+
+def search_database(server_name: str, file_path: str, formula: str, max_docs: int = 50) -> list[dict]:
+    """Search a database with a Notes @formula, evaluated against every
+    document rather than using a view index - much slower than
+    search_view/find_document_by_key, so prefer those when a suitable view
+    already exists. max_docs caps the result size."""
+    return databases.search_database(backend, server_name, file_path, formula, max_docs)
+
+
 def list_mail_folders() -> list[dict]:
     """List folders in the current user's mail database."""
     return mail.list_folders(backend)
@@ -218,6 +241,8 @@ _TOOL_FUNCS: dict[str, object] = {
     "read_document": read_document,
     "search_view": search_view,
     "export_view_csv": export_view_csv,
+    "find_document_by_key": find_document_by_key,
+    "search_database": search_database,
     "list_mail_folders": list_mail_folders,
     "search_mail": search_mail,
     "read_mail": read_mail,

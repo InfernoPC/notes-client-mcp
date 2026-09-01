@@ -103,6 +103,20 @@ default.
 Read (`read` profile):
 - `get_mail_database_info`, `list_mail_folders`, `search_mail`, `read_mail`
 - `get_database_info`, `read_document`, `search_view` (any database, by server+file path)
+- `export_view_csv` — writes a view's rows straight to a local CSV file
+  (path returned, not the data itself) instead of returning them over MCP,
+  so it isn't limited by tool-result size the way `search_view` is for a
+  large view.
+- `find_document_by_key` — fast lookup by a view's sorted column(s) (uses
+  the view index). Prefer this over `search_database` whenever the value
+  you're looking up is a real column in an existing view.
+- `search_database` — Notes `@formula` search across every document in a
+  database, for when no suitable view exists. Much slower than
+  `search_view`/`find_document_by_key` since it doesn't use a view index;
+  `max_docs` caps the result (confirmed by hand: the underlying
+  `NotesDatabase.Search` call's own `maxdocs` argument only limits what
+  `.Count` reports, not how many documents the iterator actually walks -
+  this tool enforces the cap itself instead of trusting that argument).
 
 Design (`design` profile, adds):
 - `list_forms`, `list_views` (incl. selection formulas + column formulas), `list_agents`

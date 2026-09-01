@@ -86,6 +86,14 @@ process、各自連一個 Notes session。
 Read（`read` profile）：
 - `get_mail_database_info`、`list_mail_folders`、`search_mail`、`read_mail`
 - `get_database_info`、`read_document`、`search_view`（任何資料庫，用 server+file path 指定）
+- `export_view_csv`——直接把 view 的資料寫成本機 CSV 檔（回傳的是檔案路徑，不是資料本身），不像
+  `search_view` 會受限於 MCP tool 回傳結果的大小上限，適合資料量大的 view。
+- `find_document_by_key`——用 view 排序過的欄位快速查找（走 view 索引）。只要你要查的值本來就是
+  某個既有 view 的欄位，優先用這個，而不是 `search_database`。
+- `search_database`——用 Notes `@formula` 搜尋整個資料庫的所有文件，適合沒有合適 view 可用的情境。
+  比 `search_view`/`find_document_by_key` 慢很多，因為沒有走 view 索引；`max_docs` 會限制回傳筆數
+  （已實測確認：底層 `NotesDatabase.Search` 呼叫本身的 `maxdocs` 參數只會限制 `.Count` 回報的數字，
+  並不會限制實際能走訪到的文件數——這個 tool 自己在迴圈裡強制做上限，不依賴那個參數）。
 
 Design（`design` profile，額外新增）：
 - `list_forms`、`list_views`（含 selection formula + 欄位公式）、`list_agents`
