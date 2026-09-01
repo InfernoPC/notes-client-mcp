@@ -72,9 +72,14 @@ Tool 依風險分成四個等級，用對應的指令來選：
 `notes-client-mcp-design.exe`，取代 `python.exe -m notes_mcp.server`。）
 
 把 `.mcp.json.example` 複製成 `.mcp.json`（已加進 `.gitignore`——裡面會有你本機的 Python
-路徑），填入你的直譯器路徑；裡面已經把四個等級都註冊成獨立的 server。預設只要在 MCP client 啟用
-`read` 那個就好；真的需要 `write`/`design`/`all` 權限時再自己手動啟用（例如透過 `/mcp`），因為
-那是真正的權限升級，不該是預設行為。
+路徑），填入你的直譯器路徑；裡面已經把四個等級都註冊成獨立的 server，每一個都是完全獨立的
+process、各自連一個 Notes session。
+
+**同一時間只該開一個，這四個是階梯關係，不是可以疊加的加購項目。**每個 profile 都已經包含
+`read` 的 tools（`write` = read+write，`all` = 全部），所以同時開兩個以上完全沒有意義——比較
+寬的那個早就涵蓋比較窄的了，多開的只是多付出一次多餘的 Notes 登入成本，沒有任何額外好處。預設只有
+`read` 會在 MCP client 啟用；真的需要更多權限時，啟用你要的那一個（例如 `write`）並把 `read`
+關掉，而不是兩個都開著，因為那是真正的權限升級，不該是預設行為。
 
 ## Tools
 

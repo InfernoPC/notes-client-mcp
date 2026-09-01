@@ -85,9 +85,17 @@ command:
 
 Copy `.mcp.json.example` to `.mcp.json` (gitignored - it holds your local
 Python path) and fill in your interpreter path; it already registers all
-four as separate servers. Only enable the `read` one in your MCP client by
-default; enable `write`/`design`/`all` yourself (e.g. via `/mcp`) when you
-actually want that access, since it's a real permission escalation, not a
+four as separate servers, each a fully independent process with its own
+Notes session.
+
+**Enable exactly one at a time - these are a ladder, not add-ons.** Every
+profile already includes `read`'s tools (`write` = read+write, `all` =
+everything); there's never a reason to have more than one enabled
+simultaneously, since the broader one already covers the narrower one and
+you'd just be paying for an extra redundant Notes login for nothing. Only
+`read` is enabled in your MCP client by default; when you need more, enable
+the one matching what you actually want (e.g. `write`) and disable `read`,
+rather than enabling both, since that's a real permission escalation, not a
 default.
 
 ## Tools
