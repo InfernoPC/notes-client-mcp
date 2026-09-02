@@ -34,6 +34,24 @@ def get_mail_database_info(backend: NotesBackend) -> dict:
 
 
 def get_database_info(backend: NotesBackend, server: str, file_path: str) -> dict:
+    """Return basic metadata (title, size, FT-index status) for a database.
+
+    `server` is a Notes hierarchical name, abbreviated form (e.g.
+    "Server1/ACME") - the same form get_mail_database_info returns for the
+    mail server. `file_path` is relative to that server's Data directory and
+    is frequently NOT just a bare filename - it commonly includes one or more
+    subfolders (e.g. "subdir\\name.nsf"), and is case-sensitive on some
+    platforms. Don't guess either value. Reliable ways to get the exact
+    pair: a document's doclink/URL (notes://server/replica-or-path/...), the
+    database's Properties dialog in the Notes client, or - if you only have
+    a Domino Designer local workspace cache - its bookmark folder names,
+    which encode "server/path" with '/' escaped as '_2f' and '\\' as '_5c'
+    (e.g. a folder named "Server1_2fACME" with a file inside named
+    "subdir_5cname.nsf" decodes to server "Server1/ACME", file_path
+    "subdir\\name.nsf"). If a call fails, the error message includes the
+    underlying reason (e.g. "Database open failed") rather than a bare
+    generic failure - read it before retrying with a guessed variant."""
+
     def _op(session):
         db = open_database(session, server, file_path)
         return {

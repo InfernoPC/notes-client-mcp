@@ -133,6 +133,15 @@ def open_database(session, server: str, file_path: str):
     db = session.GetDatabase(server, file_path)
     if db is None:
         raise NotesConnectionError(f"Database not found: {server!r} {file_path!r}")
-    if not db.IsOpen:
-        db.Open()
+    try:
+        if not db.IsOpen:
+            db.Open()
+    except Exception as exc:  # noqa: BLE001 - surface the real COM reason, not a bare failure
+        raise NotesConnectionError(
+            f"Could not open database (server={server!r}, file_path={file_path!r}): "
+            f"{exc}. file_path is relative to the server's Data directory and often "
+            "includes a subfolder - don't guess it; confirm the exact server/file_path "
+            "pair via a doclink/URL or the database's Properties dialog instead of "
+            "retrying with variants."
+        ) from exc
     return db
