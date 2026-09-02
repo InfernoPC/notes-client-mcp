@@ -149,6 +149,28 @@ Write（`write` profile，額外新增——**每一個都會先透過 MCP elici
 沒有 `send_mail`——已移除，因為它是不必要的特例；寄信跟這個工具其他沒有特別特殊化的寫入操作本質上
 沒有差別。
 
+## 安全模型：Profile 是 UX 控制，不是安全沙盒
+
+四個 profile（`read`/`design`/`write`/`all`）只控制 `server.py` 在 MCP 協定層要註冊哪些 tool
+名稱。這是給你自己用的「意圖範圍」/便利性控制——防止你（或只是照著現有 tool 操作的 AI 助理）在
+只想瀏覽的時候**不小心**碰到寫入操作。
+
+**它不是能擋住 AI agent 本身的安全邊界。** 任何在同一台機器上有 shell 存取權的東西——而驅動這個
+專案的 AI coding assistant 通常本來就有——都可以直接 `import notes_mcp.tools.write`，或自己
+操作 COM 物件，不管註冊了哪個 profile 都能呼叫 `create_document`/`update_document`。這個
+程式碼庫裡沒有任何 runtime 檢查能可靠地擋住這件事，因為會被這種檢查擋住的 agent，同樣也讀得到
+原始碼、寫得出不會觸發那個檢查的程式碼。
+
+**唯一不管跑什麼程式碼都真正擋得住的，是 Notes/Domino 自己的 ACL。** 如果拿來連線的 ID 檔案
+在某個資料庫上只有 Reader 權限，那不管是透過 MCP tool 呼叫、手寫的繞過腳本，還是任何其他方式，
+每一次寫入嘗試都會在伺服器端被拒絕——因為這個拒絕發生在 Notes/Domino 本身內部，不是這個工具的
+程式碼在把關。在把 `read` profile 當成保證之前，先用 `list_acl` 確認這個 ID 檔案在資料庫上
+實際的存取等級。
+
+如果你是要把這個工具部署給別人用，而且希望「唯讀」的意圖就算 AI agent 誤判或過度主動也真的擋得住，
+應該讓對方使用（或幫對方準備）一個在相關資料庫上 ACL 存取等級是 Reader 以下的 ID 檔案——不要只
+依賴 `read` profile 的註冊設定。
+
 ## 已知限制
 
 - 如果你的 MCP client 同時註冊多個 profile（例如 `.mcp.json.example` 裡的四個都開），它們的

@@ -195,6 +195,37 @@ There is no `send_mail` - it was removed as an unnecessary special case;
 sending mail isn't meaningfully different from other write operations this
 tool doesn't otherwise special-case.
 
+## Security model: profiles are UX, not a sandbox
+
+The four profiles (`read`/`design`/`write`/`all`) only control which tool
+names get registered on the MCP protocol surface in `server.py`. That's a
+convenience/intentionality control for yourself - it stops you (or an
+assistant just using the tools it's been given) from *accidentally* reaching
+a write operation when you only meant to browse.
+
+**It is not a security boundary against the AI agent itself.** Anything with
+shell access on the same machine - which any AI coding assistant driving
+this project normally has - can simply import `notes_mcp.tools.write`
+directly, or drive the COM objects itself, and call `create_document`/
+`update_document` regardless of which profile is registered. There is no
+runtime check anywhere in this codebase that can reliably stop that, because
+the same agent that would be blocked by such a check can also read the
+source and write code that doesn't trigger it.
+
+**The only enforcement that actually holds regardless of what code runs is
+Notes/Domino's own ACL.** If the ID file this tool authenticates with has
+Reader-only access on a given database, every write attempt against it is
+rejected server-side - by an MCP tool call, by a hand-written bypass script,
+by anything - because the rejection happens inside Notes/Domino itself, not
+in this tool's code. Use `list_acl` to check what access level an ID file
+actually has on a database before relying on a `read`-only profile as if it
+were a guarantee.
+
+If you're deploying this for someone else and want their read-only intent to
+actually hold even against a misbehaving or over-eager AI agent, give them
+(or have them use) an ID file whose ACL access on the databases in question
+is Reader or lower - don't rely on `read`-profile registration alone.
+
 ## Known limitations
 
 - If your MCP client registers multiple profiles at once (e.g. all four in
