@@ -66,7 +66,7 @@ command:
 |------------------------------|----------------------------------------------------|
 | `notes-client-mcp`           | mail + generic document/view read (default)        |
 | `notes-client-mcp-design`    | `read` + form/view/agent/DXL design inspection      |
-| `notes-client-mcp-write`     | `read` + create/update document, send mail          |
+| `notes-client-mcp-write`     | `read` + create/update document                     |
 | `notes-client-mcp-all`       | everything                                          |
 
 ```json
