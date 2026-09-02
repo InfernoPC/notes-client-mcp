@@ -78,8 +78,30 @@ def get_database_info(server_name: str, file_path: str) -> dict:
 
 
 def read_document(server_name: str, file_path: str, unid: str) -> dict:
-    """Read one document's fields by UniversalID from any database."""
+    """Read one document's fields by UniversalID from any database. Rich
+    text fields come back as plain text only - check the "rich_text_items"
+    list in the result and call extract_document_media if you need the
+    actual images/attachments in one of them."""
     return databases.read_document(backend, server_name, file_path, unid)
+
+
+def extract_document_media(
+    server_name: str,
+    file_path: str,
+    unid: str,
+    output_dir: str | None = None,
+) -> list[dict]:
+    """Extract every image and file attachment out of a document's rich text
+    fields to local files (so they can be viewed directly) - read_document's
+    plain-text item values silently drop both. Covers two different kinds of
+    embedded content, found two different ways: real file attachments/OLE
+    objects (via each item's EmbeddedObjects) and pasted-in pictures like
+    screenshots (only reachable via a DXL export with bitmap-to-GIF
+    conversion - they aren't real "embedded objects" at all). See
+    databases.extract_document_media's docstring for the full explanation.
+    Defaults to a generated per-document folder under the system temp
+    directory if output_dir is omitted."""
+    return databases.extract_document_media(backend, server_name, file_path, unid, output_dir)
 
 
 def search_view(
@@ -249,6 +271,7 @@ _TOOL_FUNCS: dict[str, object] = {
     "get_mail_database_info": get_mail_database_info,
     "get_database_info": get_database_info,
     "read_document": read_document,
+    "extract_document_media": extract_document_media,
     "search_view": search_view,
     "export_view_csv": export_view_csv,
     "find_document_by_key": find_document_by_key,

@@ -7,11 +7,29 @@ for why raw COM objects must never cross back out of that closure.
 
 from __future__ import annotations
 
+import base64
 import csv
+import re
 import tempfile
 from pathlib import Path
 
 from ..notes_backend import NotesBackend, open_database
+
+# NotesItem.Type values actually seen via COM on this Domino version (there is
+# no early-bound constants module available with the late-bound Dispatch this
+# project uses, so these are hardcoded from observation, not from a symbolic
+# constant). Only RICHTEXT (1) matters to the code below; the rest are here
+# so _document_to_dict's "type" field is at least readable instead of a bare
+# int for the common cases.
+_ITEM_TYPE_RICHTEXT = 1
+_ITEM_TYPE_NAMES = {
+    1: "richtext",
+    1024: "datetime",
+    1074: "names",
+    1075: "readers",
+    1076: "authors",
+    1280: "text",
+}
 
 
 def get_mail_database_info(backend: NotesBackend) -> dict:
@@ -67,7 +85,14 @@ def get_database_info(backend: NotesBackend, server: str, file_path: str) -> dic
 
 def _document_to_dict(doc) -> dict:
     items = {}
+    rich_text_items = []
     for item in doc.Items:
+        try:
+            item_type = item.Type
+        except Exception:  # noqa: BLE001
+            item_type = None
+        if item_type == _ITEM_TYPE_RICHTEXT:
+            rich_text_items.append(item.Name)
         try:
             items[item.Name] = item.Text if hasattr(item, "Text") else doc.GetItemValue(item.Name)
         except Exception:  # noqa: BLE001 - some item types don't support .Text via COM
@@ -81,6 +106,11 @@ def _document_to_dict(doc) -> dict:
         "created": str(doc.Created),
         "last_modified": str(doc.LastModified),
         "items": items,
+        # `.Text`/GetItemValue on a rich text item returns plain text only -
+        # any pasted image or file attachment is silently dropped. If this
+        # list is non-empty and you need the actual images/attachments, call
+        # extract_document_media on this same document.
+        "rich_text_items": rich_text_items,
     }
 
 
@@ -91,6 +121,119 @@ def read_document(backend: NotesBackend, server: str, file_path: str, unid: str)
         if doc is None:
             raise ValueError(f"No document with UNID {unid!r}")
         return _document_to_dict(doc)
+
+    return backend.run(_op)
+
+
+def extract_document_media(
+    backend: NotesBackend,
+    server: str,
+    file_path: str,
+    unid: str,
+    output_dir: str | None = None,
+) -> list[dict]:
+    """Extract every image and file attachment out of a document's rich text
+    fields to local files, so they can actually be viewed (read_document's
+    items only ever contain plain text - a rich text field's `.Text`/
+    GetItemValue value silently drops any image or attachment). Check
+    read_document's "rich_text_items" first; only call this when that list
+    is non-empty.
+
+    There are two genuinely different kinds of embedded content, extracted
+    two different ways (confirmed by hand - neither mechanism finds the
+    other's content):
+
+    - Real file attachments and OLE objects: found via each rich text
+      item's `.EmbeddedObjects`, saved with `NotesEmbeddedObject.ExtractFile`.
+    - Pasted-in pictures (e.g. a screenshot pasted directly into the body):
+      stored as raw Notes-bitmap CD records, invisible to `.EmbeddedObjects`
+      and to `NotesRichTextNavigator` element search. The only way to reach
+      them is a whole-document DXL export with
+      `NotesDXLExporter.ConvertNotesBitmapsToGIF = True`, which converts them
+      to base64-encoded `<gif>`/`<jpeg>` blocks in the exported XML - decoded
+      and saved here. `<gif originalformat='notesbitmap'>` blocks are
+      skipped (those are auto-generated attachment/OLE thumbnails, not real
+      pictures), and anything under 4KB after decoding is skipped too (still
+      almost always a thumbnail, not real content).
+
+    Returns a list of {kind, item_name, name, output_path, size_bytes} -
+    kind is "attachment" or "inline_image" (inline_image has no item_name;
+    DXL export is whole-document, not scoped to one field, so the source
+    field isn't recoverable from it). output_dir defaults to a generated
+    per-document folder under the system temp directory."""
+
+    def _op(session):
+        db = open_database(session, server, file_path)
+        doc = db.GetDocumentByUNID(unid)
+        if doc is None:
+            raise ValueError(f"No document with UNID {unid!r}")
+
+        if output_dir:
+            out_dir = Path(output_dir)
+        else:
+            out_dir = Path(tempfile.gettempdir()) / f"notes_media_{unid}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        results = []
+
+        # --- Real attachments / OLE objects, per rich text item ---
+        for item in doc.Items:
+            try:
+                item_type = item.Type
+            except Exception:  # noqa: BLE001
+                continue
+            if item_type != _ITEM_TYPE_RICHTEXT:
+                continue
+            try:
+                embedded = item.EmbeddedObjects
+            except Exception:  # noqa: BLE001
+                embedded = None
+            for idx, obj in enumerate(embedded or []):
+                ext = Path(obj.Name).suffix or ".bin"
+                out_path = out_dir / f"{item.Name}_{idx}{ext}"
+                obj.ExtractFile(str(out_path))
+                results.append(
+                    {
+                        "kind": "attachment",
+                        "item_name": item.Name,
+                        "name": obj.Name,
+                        "output_path": str(out_path),
+                        "size_bytes": out_path.stat().st_size,
+                    }
+                )
+
+        # --- Pasted-in pictures, whole-document DXL export ---
+        exporter = session.CreateDXLExporter()
+        exporter.ConvertNotesBitmapsToGIF = True
+        dxl = exporter.Export(doc)
+
+        patterns = [
+            ("inline_image", "gif", r"<gif>(.*?)</gif>"),
+            ("inline_image", "jpg", r"<jpeg>(.*?)</jpeg>"),
+        ]
+        img_idx = 0
+        for kind, ext, pattern in patterns:
+            for m in re.finditer(pattern, dxl, re.DOTALL):
+                try:
+                    raw = base64.b64decode(m.group(1).strip())
+                except Exception:  # noqa: BLE001
+                    continue
+                if len(raw) < 4096:
+                    continue  # thumbnail, not real content - see docstring
+                out_path = out_dir / f"inline_{img_idx}.{ext}"
+                out_path.write_bytes(raw)
+                results.append(
+                    {
+                        "kind": kind,
+                        "item_name": None,
+                        "name": out_path.name,
+                        "output_path": str(out_path),
+                        "size_bytes": len(raw),
+                    }
+                )
+                img_idx += 1
+
+        return results
 
     return backend.run(_op)
 

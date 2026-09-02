@@ -89,6 +89,15 @@ Read（`read` profile）：
   `list_mail_folders`/`search_mail`/`read_mail` 這幾個包裝，因為通用 tool 配上信箱的 server+path
   就能做一樣的事，屬於多餘的特殊化，已移除）。
 - `get_database_info`、`read_document`、`search_view`（任何資料庫，用 server+file path 指定）
+- `extract_document_media`——`read_document` 回傳的欄位值一律是純文字，就算是 rich text 欄位也一樣
+  （`read_document` 的結果會用 `rich_text_items` 標出哪些欄位是 rich text）。貼上去的圖片（例如
+  截圖）跟真正的檔案附件/OLE 物件是兩種完全不同的東西，用兩種不同方式抓取（已實測確認：兩種抓取方式
+  互相抓不到對方的內容）：附件/OLE 物件是每個欄位自己的 `EmbeddedObjects`（`.ExtractFile`）；貼上
+  去的圖片是原始的 Notes 點陣圖 CD 記錄，本身根本不是「embedded object」，唯一能拿到的方式是對整份
+  文件做 DXL 匯出，並設定 `NotesDXLExporter.ConvertNotesBitmapsToGIF = True`，再解碼匯出結果裡的
+  `<gif>`/`<jpeg>` base64 區塊（跳過 `<gif originalformat='notesbitmap'>` 這種——那是自動產生的附件
+  縮圖，不是真正的圖片；解碼後小於 4KB 的也跳過，幾乎都是縮圖）。檔案會寫進本機一個依文件產生的暫存
+  資料夾，回傳的是檔案路徑——圖片結果可以直接用 Read 工具打開來看。
 - `export_view_csv`——直接把 view 的資料寫成本機 CSV 檔（回傳的是檔案路徑，不是資料本身），不像
   `search_view` 會受限於 MCP tool 回傳結果的大小上限，適合資料量大的 view。
 - `find_document_by_key`——用 view 排序過的欄位快速查找（走 view 索引）。只要你要查的值本來就是

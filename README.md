@@ -108,6 +108,21 @@ Read (`read` profile):
   wrappers; removed as redundant special-casing once the generic tools could
   do the same thing with the mail db's server+path).
 - `get_database_info`, `read_document`, `search_view` (any database, by server+file path)
+- `extract_document_media` — `read_document`'s item values are plain text
+  only, even for rich text fields (`read_document` flags which item names
+  are rich text via `rich_text_items` in its result). Pasted-in pictures
+  (e.g. a screenshot) and real file attachments/OLE objects are two
+  genuinely different things stored two different ways (confirmed by hand -
+  neither extraction method finds the other's content): attachments/OLE
+  objects come from each item's `EmbeddedObjects` (`.ExtractFile`); pasted
+  pictures are raw Notes-bitmap CD records with no "embedded object" of
+  their own at all, only reachable via a whole-document DXL export with
+  `NotesDXLExporter.ConvertNotesBitmapsToGIF = True`, decoding the resulting
+  `<gif>`/`<jpeg>` base64 blocks (skipping `<gif originalformat='notesbitmap'>`
+  blocks, which are auto-generated attachment thumbnails, and anything
+  under 4KB decoded, which is almost always a thumbnail too). Writes files
+  to a local per-document temp folder and returns their paths - read an
+  image result directly with the Read tool to actually see it.
 - `export_view_csv` — writes a view's rows straight to a local CSV file
   (path returned, not the data itself) instead of returning them over MCP,
   so it isn't limited by tool-result size the way `search_view` is for a
