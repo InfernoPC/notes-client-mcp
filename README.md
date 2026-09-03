@@ -110,7 +110,11 @@ Read (`read` profile):
 - `get_database_info`, `read_document`, `search_view` (any database, by server+file path)
 - `extract_document_media` — `read_document`'s item values are plain text
   only, even for rich text fields (`read_document` flags which item names
-  are rich text via `rich_text_items` in its result). Pasted-in pictures
+  are rich text via `rich_text_items` in its result; pass
+  `include_media=True` to `read_document` to get both in one call instead
+  of calling this separately - it costs a DXL export either way, so leave
+  it off for a plain field read when you don't yet know you'll need the
+  media). Pasted-in pictures
   (e.g. a screenshot) and real file attachments/OLE objects are two
   genuinely different things stored two different ways (confirmed by hand -
   neither extraction method finds the other's content): attachments/OLE

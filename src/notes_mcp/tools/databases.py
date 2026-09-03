@@ -114,13 +114,104 @@ def _document_to_dict(doc) -> dict:
     }
 
 
-def read_document(backend: NotesBackend, server: str, file_path: str, unid: str) -> dict:
+def _extract_media(session, doc, unid: str, output_dir: str | None) -> list[dict]:
+    """Shared by extract_document_media and read_document(include_media=True) -
+    see extract_document_media's docstring for the two extraction mechanisms
+    this implements and why both are needed."""
+    if output_dir:
+        out_dir = Path(output_dir)
+    else:
+        out_dir = Path(tempfile.gettempdir()) / f"notes_media_{unid}"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    results = []
+
+    # --- Real attachments / OLE objects, per rich text item ---
+    for item in doc.Items:
+        try:
+            item_type = item.Type
+        except Exception:  # noqa: BLE001
+            continue
+        if item_type != _ITEM_TYPE_RICHTEXT:
+            continue
+        try:
+            embedded = item.EmbeddedObjects
+        except Exception:  # noqa: BLE001
+            embedded = None
+        for idx, obj in enumerate(embedded or []):
+            ext = Path(obj.Name).suffix or ".bin"
+            out_path = out_dir / f"{item.Name}_{idx}{ext}"
+            obj.ExtractFile(str(out_path))
+            results.append(
+                {
+                    "kind": "attachment",
+                    "item_name": item.Name,
+                    "name": obj.Name,
+                    "output_path": str(out_path),
+                    "size_bytes": out_path.stat().st_size,
+                }
+            )
+
+    # --- Pasted-in pictures, whole-document DXL export ---
+    exporter = session.CreateDXLExporter()
+    exporter.ConvertNotesBitmapsToGIF = True
+    dxl = exporter.Export(doc)
+
+    patterns = [
+        ("inline_image", "gif", r"<gif>(.*?)</gif>"),
+        ("inline_image", "jpg", r"<jpeg>(.*?)</jpeg>"),
+    ]
+    img_idx = 0
+    for kind, ext, pattern in patterns:
+        for m in re.finditer(pattern, dxl, re.DOTALL):
+            try:
+                raw = base64.b64decode(m.group(1).strip())
+            except Exception:  # noqa: BLE001
+                continue
+            if len(raw) < 4096:
+                continue  # thumbnail, not real content - see docstring
+            out_path = out_dir / f"inline_{img_idx}.{ext}"
+            out_path.write_bytes(raw)
+            results.append(
+                {
+                    "kind": kind,
+                    "item_name": None,
+                    "name": out_path.name,
+                    "output_path": str(out_path),
+                    "size_bytes": len(raw),
+                }
+            )
+            img_idx += 1
+
+    return results
+
+
+def read_document(
+    backend: NotesBackend,
+    server: str,
+    file_path: str,
+    unid: str,
+    include_media: bool = False,
+    media_output_dir: str | None = None,
+) -> dict:
+    """Read one document's fields by UniversalID. Set include_media=True to
+    also extract any images/attachments in the same call (see
+    extract_document_media's docstring for what that covers and how) - the
+    result gains a "media" key with the same shape extract_document_media
+    returns. Leave it False (the default) for a plain field read with no
+    local file writes; check the result's "rich_text_items" list and call
+    extract_document_media separately afterward if you only sometimes need
+    the media and want to avoid the DXL-export cost on every read."""
+
     def _op(session):
         db = open_database(session, server, file_path)
         doc = db.GetDocumentByUNID(unid)
         if doc is None:
             raise ValueError(f"No document with UNID {unid!r}")
-        return _document_to_dict(doc)
+        result = _document_to_dict(doc)
+        if include_media:
+            result["media"] = _extract_media(session, doc, unid, media_output_dir)
+        return result
 
     return backend.run(_op)
 
@@ -137,7 +228,8 @@ def extract_document_media(
     items only ever contain plain text - a rich text field's `.Text`/
     GetItemValue value silently drops any image or attachment). Check
     read_document's "rich_text_items" first; only call this when that list
-    is non-empty.
+    is non-empty. (Or pass include_media=True to read_document instead, to
+    get both in one call.)
 
     There are two genuinely different kinds of embedded content, extracted
     two different ways (confirmed by hand - neither mechanism finds the
@@ -167,73 +259,7 @@ def extract_document_media(
         doc = db.GetDocumentByUNID(unid)
         if doc is None:
             raise ValueError(f"No document with UNID {unid!r}")
-
-        if output_dir:
-            out_dir = Path(output_dir)
-        else:
-            out_dir = Path(tempfile.gettempdir()) / f"notes_media_{unid}"
-        out_dir.mkdir(parents=True, exist_ok=True)
-
-        results = []
-
-        # --- Real attachments / OLE objects, per rich text item ---
-        for item in doc.Items:
-            try:
-                item_type = item.Type
-            except Exception:  # noqa: BLE001
-                continue
-            if item_type != _ITEM_TYPE_RICHTEXT:
-                continue
-            try:
-                embedded = item.EmbeddedObjects
-            except Exception:  # noqa: BLE001
-                embedded = None
-            for idx, obj in enumerate(embedded or []):
-                ext = Path(obj.Name).suffix or ".bin"
-                out_path = out_dir / f"{item.Name}_{idx}{ext}"
-                obj.ExtractFile(str(out_path))
-                results.append(
-                    {
-                        "kind": "attachment",
-                        "item_name": item.Name,
-                        "name": obj.Name,
-                        "output_path": str(out_path),
-                        "size_bytes": out_path.stat().st_size,
-                    }
-                )
-
-        # --- Pasted-in pictures, whole-document DXL export ---
-        exporter = session.CreateDXLExporter()
-        exporter.ConvertNotesBitmapsToGIF = True
-        dxl = exporter.Export(doc)
-
-        patterns = [
-            ("inline_image", "gif", r"<gif>(.*?)</gif>"),
-            ("inline_image", "jpg", r"<jpeg>(.*?)</jpeg>"),
-        ]
-        img_idx = 0
-        for kind, ext, pattern in patterns:
-            for m in re.finditer(pattern, dxl, re.DOTALL):
-                try:
-                    raw = base64.b64decode(m.group(1).strip())
-                except Exception:  # noqa: BLE001
-                    continue
-                if len(raw) < 4096:
-                    continue  # thumbnail, not real content - see docstring
-                out_path = out_dir / f"inline_{img_idx}.{ext}"
-                out_path.write_bytes(raw)
-                results.append(
-                    {
-                        "kind": kind,
-                        "item_name": None,
-                        "name": out_path.name,
-                        "output_path": str(out_path),
-                        "size_bytes": len(raw),
-                    }
-                )
-                img_idx += 1
-
-        return results
+        return _extract_media(session, doc, unid, output_dir)
 
     return backend.run(_op)
 

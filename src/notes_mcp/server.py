@@ -77,12 +77,23 @@ def get_database_info(server_name: str, file_path: str) -> dict:
     return databases.get_database_info(backend, server_name, file_path)
 
 
-def read_document(server_name: str, file_path: str, unid: str) -> dict:
+def read_document(
+    server_name: str,
+    file_path: str,
+    unid: str,
+    include_media: bool = False,
+    media_output_dir: str | None = None,
+) -> dict:
     """Read one document's fields by UniversalID from any database. Rich
     text fields come back as plain text only - check the "rich_text_items"
     list in the result and call extract_document_media if you need the
-    actual images/attachments in one of them."""
-    return databases.read_document(backend, server_name, file_path, unid)
+    actual images/attachments in one of them, or pass include_media=True to
+    get both in this one call (adds a "media" key to the result, same shape
+    extract_document_media returns - costs a DXL export even if the
+    document turns out to have no pasted pictures, so leave it False for a
+    plain field read when you don't yet know whether you'll need the
+    media)."""
+    return databases.read_document(backend, server_name, file_path, unid, include_media, media_output_dir)
 
 
 def extract_document_media(

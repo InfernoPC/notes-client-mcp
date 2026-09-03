@@ -90,7 +90,9 @@ Read（`read` profile）：
   就能做一樣的事，屬於多餘的特殊化，已移除）。
 - `get_database_info`、`read_document`、`search_view`（任何資料庫，用 server+file path 指定）
 - `extract_document_media`——`read_document` 回傳的欄位值一律是純文字，就算是 rich text 欄位也一樣
-  （`read_document` 的結果會用 `rich_text_items` 標出哪些欄位是 rich text）。貼上去的圖片（例如
+  （`read_document` 的結果會用 `rich_text_items` 標出哪些欄位是 rich text；也可以呼叫
+  `read_document` 時帶 `include_media=True`，一次拿到兩者，不用分開呼叫——反正不管哪種呼叫方式都要
+  做一次 DXL 匯出，如果還不確定會不會需要圖片/附件，就先不要開這個選項，走一般欄位讀取就好）。貼上去的圖片（例如
   截圖）跟真正的檔案附件/OLE 物件是兩種完全不同的東西，用兩種不同方式抓取（已實測確認：兩種抓取方式
   互相抓不到對方的內容）：附件/OLE 物件是每個欄位自己的 `EmbeddedObjects`（`.ExtractFile`）；貼上
   去的圖片是原始的 Notes 點陣圖 CD 記錄，本身根本不是「embedded object」，唯一能拿到的方式是對整份
