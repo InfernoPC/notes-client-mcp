@@ -120,11 +120,13 @@ def extract_document_media(
 
 
 def extract_document_tables(server_name: str, file_path: str, unid: str) -> list[dict]:
-    """Extract every rich text table in a document as plain rows/cells -
+    """Extract every rich text table in a document as rows of cells -
     read_document's plain-text item values collapse a table's structure
-    away entirely. Returns a list of {item_name, table_index, rows,
-    row_labels}; a document can contain more than one table, hence the flat
-    list. See databases.extract_document_tables's docstring for details."""
+    (and any merged cells / background color) away entirely. Returns a
+    list of {item_name, table_index, rows, row_labels}; each cell in
+    `rows` is {text, colspan, rowspan, bgcolor}. A document can contain
+    more than one table, hence the flat list. See
+    databases.extract_document_tables's docstring for details."""
     return databases.extract_document_tables(backend, server_name, file_path, unid)
 
 

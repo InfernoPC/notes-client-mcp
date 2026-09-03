@@ -127,17 +127,21 @@ Read (`read` profile):
   under 4KB decoded, which is almost always a thumbnail too). Writes files
   to a local per-document temp folder and returns their paths - read an
   image result directly with the Read tool to actually see it.
-- `extract_document_tables` — a rich text table's structure (rows/columns)
-  is completely lost in `read_document`'s plain-text item values (every
-  cell's text just runs together). Unlike images, tables need no special
-  handling - they're real structured elements in a DXL export
-  (`<table>`/`<tablerow>`/`<tablecell>`), just parsed directly (confirmed
-  by hand against a real multi-table document). Returns a flat list of
+- `extract_document_tables` — a rich text table's structure (rows/columns,
+  merged cells, background color) is completely lost in `read_document`'s
+  plain-text item values (every cell's text just runs together). Unlike
+  images, tables need no special handling - they're real structured
+  elements in a DXL export (`<table>`/`<tablerow>`/`<tablecell>`), just
+  parsed directly (confirmed by hand against a real multi-table document,
+  including one with merged/colored cells). Returns a flat list of
   `{item_name, table_index, rows, row_labels}` since a field can contain
-  more than one table; `row_labels` carries each row's `tablabel` attribute
-  where present (seen on tab-style tables), else null. `read_document`'s
-  `include_tables=True` gets the same result in one call instead of a
-  separate one.
+  more than one table; each cell in `rows` is `{text, colspan, rowspan,
+  bgcolor}` (colspan/rowspan default to 1, bgcolor to null) - this is the
+  raw per-row cell list as DXL encodes it, not a reconstructed visual grid,
+  but colspan/rowspan/bgcolor is everything needed to lay that out by hand;
+  `row_labels` carries each row's `tablabel` attribute where present (seen
+  on tab-style tables), else null. `read_document`'s `include_tables=True`
+  gets the same result in one call instead of a separate one.
 - `export_view_csv` — writes a view's rows straight to a local CSV file
   (path returned, not the data itself) instead of returning them over MCP,
   so it isn't limited by tool-result size the way `search_view` is for a

@@ -273,19 +273,32 @@ def extract_document_media(
     return backend.run(_op)
 
 
-def _cell_text(cell) -> str:
-    return "".join(cell.itertext()).strip()
+def _cell_dict(cell) -> dict:
+    """A <tablecell>'s DXL attributes for merged cells and background color
+    are `columnspan`/`rowspan`/`bgcolor` (confirmed by hand); each defaults
+    to absent (colspan/rowspan of 1, no bgcolor) when the cell isn't merged
+    or colored. Not grid-reconstructed (no attempt to figure out which
+    logical row/column a spanned cell's neighbors land in) - this is the raw
+    per-row cell list as DXL encodes it, which already carries everything
+    needed to reconstruct the visual layout by hand."""
+    return {
+        "text": "".join(cell.itertext()).strip(),
+        "colspan": int(cell.get("columnspan", "1")),
+        "rowspan": int(cell.get("rowspan", "1")),
+        "bgcolor": cell.get("bgcolor"),
+    }
 
 
 def _extract_tables(session, doc) -> list[dict]:
     """DXL-export the whole document and pull every rich text table out of
-    the resulting XML into plain rows/cells. Unlike pasted pictures, tables
+    the resulting XML into rows of cells. Unlike pasted pictures, tables
     show up as real structured elements in DXL (<table>/<tablerow>/
     <tablecell>/<par>) - no bitmap conversion or special handling needed,
-    just parse it (confirmed by hand: a table's numbers/text come through
-    exactly as authored). A `tablerow`'s `tablabel` attribute, when present,
-    is a per-row label (seen on tab-style tables) - included since it's
-    often the only human-readable identifier for that row."""
+    just parse it (confirmed by hand: a table's numbers/text, merged cells,
+    and background colors all come through exactly as authored). A
+    `tablerow`'s `tablabel` attribute, when present, is a per-row label
+    (seen on tab-style tables) - included since it's often the only
+    human-readable identifier for that row."""
     exporter = session.CreateDXLExporter()
     dxl = exporter.Export(doc)
     root = ET.fromstring(dxl)
@@ -301,7 +314,7 @@ def _extract_tables(session, doc) -> list[dict]:
             row_labels = []
             for row in table.findall(f"{_DXL_NS}tablerow"):
                 row_labels.append(row.get("tablabel"))
-                rows.append([_cell_text(cell) for cell in row.findall(f"{_DXL_NS}tablecell")])
+                rows.append([_cell_dict(cell) for cell in row.findall(f"{_DXL_NS}tablecell")])
             results.append(
                 {
                     "item_name": item_name,
@@ -319,15 +332,21 @@ def extract_document_tables(
     file_path: str,
     unid: str,
 ) -> list[dict]:
-    """Extract every rich text table in a document as plain rows/cells -
+    """Extract every rich text table in a document as rows of cells -
     read_document's plain-text item values collapse a table's structure
     away entirely (all cell text runs together with no row/column
-    boundaries). Returns a list of {item_name, table_index, rows,
-    row_labels} - `rows` is a list of rows, each a list of cell strings in
-    column order; `row_labels` is the same length as `rows` and holds each
-    row's `tablabel` attribute (a per-row label seen on tab-style tables),
-    or null where a row has none. A document/field can contain more than
-    one table, hence the flat list rather than one table per item_name."""
+    boundaries, no merge/color info at all). Returns a list of {item_name,
+    table_index, rows, row_labels} - `rows` is a list of rows, each a list
+    of cell dicts {text, colspan, rowspan, bgcolor} in column order
+    (colspan/rowspan default to 1, bgcolor to null, when the cell isn't
+    merged/colored); `row_labels` is the same length as `rows` and holds
+    each row's `tablabel` attribute (a per-row label seen on tab-style
+    tables), or null where a row has none. This is the raw per-row cell
+    list as DXL encodes it, not a reconstructed visual grid - a merged
+    cell's neighbors on other rows aren't figured out for you, but
+    colspan/rowspan/bgcolor is everything needed to do that by hand. A
+    document/field can contain more than one table, hence the flat list
+    rather than one table per item_name."""
 
     def _op(session):
         db = open_database(session, server, file_path)

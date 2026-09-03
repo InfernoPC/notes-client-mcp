@@ -100,12 +100,15 @@ Read（`read` profile）：
   `<gif>`/`<jpeg>` base64 區塊（跳過 `<gif originalformat='notesbitmap'>` 這種——那是自動產生的附件
   縮圖，不是真正的圖片；解碼後小於 4KB 的也跳過，幾乎都是縮圖）。檔案會寫進本機一個依文件產生的暫存
   資料夾，回傳的是檔案路徑——圖片結果可以直接用 Read 工具打開來看。
-- `extract_document_tables`——rich text 表格的結構（列/欄）在 `read_document` 的純文字欄位值裡
-  完全消失（每個儲存格的文字全部黏在一起）。跟圖片不一樣，表格不需要特殊處理——它們在 DXL 匯出結果
-  裡本來就是結構化的元素（`<table>`/`<tablerow>`/`<tablecell>`），直接解析就好（已對一份含多個
-  表格的真實文件實測確認）。回傳的是攤平的清單 `{item_name, table_index, rows, row_labels}`，
-  因為同一個欄位可能有不只一個表格；`row_labels` 帶的是每一列的 `tablabel` 屬性（常見於分頁式表格），
-  沒有的話是 null。`read_document` 帶 `include_tables=True` 可以一次拿到同樣的結果，不用分開呼叫。
+- `extract_document_tables`——rich text 表格的結構（列/欄、合併儲存格、底色）在 `read_document`
+  的純文字欄位值裡完全消失（每個儲存格的文字全部黏在一起）。跟圖片不一樣，表格不需要特殊處理——它們
+  在 DXL 匯出結果裡本來就是結構化的元素（`<table>`/`<tablerow>`/`<tablecell>`），直接解析就好
+  （已對一份含多個表格的真實文件實測確認，包含有合併儲存格/底色的表格）。回傳的是攤平的清單
+  `{item_name, table_index, rows, row_labels}`，因為同一個欄位可能有不只一個表格；`rows` 裡每個
+  儲存格是 `{text, colspan, rowspan, bgcolor}`（colspan/rowspan 預設 1，bgcolor 預設 null）——
+  這是 DXL 原本編碼的每列儲存格清單，不是重建過的視覺網格，但 colspan/rowspan/bgcolor 已經足夠自己
+  手動排出實際版面；`row_labels` 帶的是每一列的 `tablabel` 屬性（常見於分頁式表格），沒有的話是
+  null。`read_document` 帶 `include_tables=True` 可以一次拿到同樣的結果，不用分開呼叫。
 - `export_view_csv`——直接把 view 的資料寫成本機 CSV 檔（回傳的是檔案路徑，不是資料本身），不像
   `search_view` 會受限於 MCP tool 回傳結果的大小上限，適合資料量大的 view。
 - `find_document_by_key`——用 view 排序過的欄位快速查找（走 view 索引）。只要你要查的值本來就是
