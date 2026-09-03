@@ -83,17 +83,21 @@ def read_document(
     unid: str,
     include_media: bool = False,
     media_output_dir: str | None = None,
+    include_tables: bool = False,
 ) -> dict:
     """Read one document's fields by UniversalID from any database. Rich
     text fields come back as plain text only - check the "rich_text_items"
-    list in the result and call extract_document_media if you need the
-    actual images/attachments in one of them, or pass include_media=True to
-    get both in this one call (adds a "media" key to the result, same shape
-    extract_document_media returns - costs a DXL export even if the
-    document turns out to have no pasted pictures, so leave it False for a
-    plain field read when you don't yet know whether you'll need the
-    media)."""
-    return databases.read_document(backend, server_name, file_path, unid, include_media, media_output_dir)
+    list in the result and call extract_document_media/
+    extract_document_tables if you need the actual images/attachments or
+    table structure in one of them, or pass include_media=True /
+    include_tables=True to get them in this one call (adds "media"/"tables"
+    keys, same shape those tools return - each costs a DXL export even if
+    the document turns out to have nothing to extract, so leave both False
+    for a plain field read when you don't yet know whether you'll need
+    them)."""
+    return databases.read_document(
+        backend, server_name, file_path, unid, include_media, media_output_dir, include_tables
+    )
 
 
 def extract_document_media(
@@ -113,6 +117,15 @@ def extract_document_media(
     Defaults to a generated per-document folder under the system temp
     directory if output_dir is omitted."""
     return databases.extract_document_media(backend, server_name, file_path, unid, output_dir)
+
+
+def extract_document_tables(server_name: str, file_path: str, unid: str) -> list[dict]:
+    """Extract every rich text table in a document as plain rows/cells -
+    read_document's plain-text item values collapse a table's structure
+    away entirely. Returns a list of {item_name, table_index, rows,
+    row_labels}; a document can contain more than one table, hence the flat
+    list. See databases.extract_document_tables's docstring for details."""
+    return databases.extract_document_tables(backend, server_name, file_path, unid)
 
 
 def search_view(
@@ -283,6 +296,7 @@ _TOOL_FUNCS: dict[str, object] = {
     "get_database_info": get_database_info,
     "read_document": read_document,
     "extract_document_media": extract_document_media,
+    "extract_document_tables": extract_document_tables,
     "search_view": search_view,
     "export_view_csv": export_view_csv,
     "find_document_by_key": find_document_by_key,

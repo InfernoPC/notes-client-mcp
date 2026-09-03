@@ -11,9 +11,12 @@ import base64
 import csv
 import re
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from ..notes_backend import NotesBackend, open_database
+
+_DXL_NS = "{http://www.lotus.com/dxl}"
 
 # NotesItem.Type values actually seen via COM on this Domino version (there is
 # no early-bound constants module available with the late-bound Dispatch this
@@ -193,15 +196,19 @@ def read_document(
     unid: str,
     include_media: bool = False,
     media_output_dir: str | None = None,
+    include_tables: bool = False,
 ) -> dict:
     """Read one document's fields by UniversalID. Set include_media=True to
     also extract any images/attachments in the same call (see
     extract_document_media's docstring for what that covers and how) - the
     result gains a "media" key with the same shape extract_document_media
-    returns. Leave it False (the default) for a plain field read with no
-    local file writes; check the result's "rich_text_items" list and call
-    extract_document_media separately afterward if you only sometimes need
-    the media and want to avoid the DXL-export cost on every read."""
+    returns. Set include_tables=True to also extract every rich text table
+    as plain rows/cells (see extract_document_tables's docstring) - adds a
+    "tables" key, same shape extract_document_tables returns. Both default
+    to False for a plain field read with no local file writes / DXL export;
+    check the result's "rich_text_items" list and call extract_document_media
+    / extract_document_tables separately afterward if you only sometimes
+    need them and want to avoid paying for a DXL export on every read."""
 
     def _op(session):
         db = open_database(session, server, file_path)
@@ -211,6 +218,8 @@ def read_document(
         result = _document_to_dict(doc)
         if include_media:
             result["media"] = _extract_media(session, doc, unid, media_output_dir)
+        if include_tables:
+            result["tables"] = _extract_tables(session, doc)
         return result
 
     return backend.run(_op)
@@ -260,6 +269,72 @@ def extract_document_media(
         if doc is None:
             raise ValueError(f"No document with UNID {unid!r}")
         return _extract_media(session, doc, unid, output_dir)
+
+    return backend.run(_op)
+
+
+def _cell_text(cell) -> str:
+    return "".join(cell.itertext()).strip()
+
+
+def _extract_tables(session, doc) -> list[dict]:
+    """DXL-export the whole document and pull every rich text table out of
+    the resulting XML into plain rows/cells. Unlike pasted pictures, tables
+    show up as real structured elements in DXL (<table>/<tablerow>/
+    <tablecell>/<par>) - no bitmap conversion or special handling needed,
+    just parse it (confirmed by hand: a table's numbers/text come through
+    exactly as authored). A `tablerow`'s `tablabel` attribute, when present,
+    is a per-row label (seen on tab-style tables) - included since it's
+    often the only human-readable identifier for that row."""
+    exporter = session.CreateDXLExporter()
+    dxl = exporter.Export(doc)
+    root = ET.fromstring(dxl)
+
+    results = []
+    for item in root.findall(f"{_DXL_NS}item"):
+        item_name = item.get("name")
+        richtext = item.find(f"{_DXL_NS}richtext")
+        if richtext is None:
+            continue
+        for table_index, table in enumerate(richtext.findall(f".//{_DXL_NS}table")):
+            rows = []
+            row_labels = []
+            for row in table.findall(f"{_DXL_NS}tablerow"):
+                row_labels.append(row.get("tablabel"))
+                rows.append([_cell_text(cell) for cell in row.findall(f"{_DXL_NS}tablecell")])
+            results.append(
+                {
+                    "item_name": item_name,
+                    "table_index": table_index,
+                    "rows": rows,
+                    "row_labels": row_labels,
+                }
+            )
+    return results
+
+
+def extract_document_tables(
+    backend: NotesBackend,
+    server: str,
+    file_path: str,
+    unid: str,
+) -> list[dict]:
+    """Extract every rich text table in a document as plain rows/cells -
+    read_document's plain-text item values collapse a table's structure
+    away entirely (all cell text runs together with no row/column
+    boundaries). Returns a list of {item_name, table_index, rows,
+    row_labels} - `rows` is a list of rows, each a list of cell strings in
+    column order; `row_labels` is the same length as `rows` and holds each
+    row's `tablabel` attribute (a per-row label seen on tab-style tables),
+    or null where a row has none. A document/field can contain more than
+    one table, hence the flat list rather than one table per item_name."""
+
+    def _op(session):
+        db = open_database(session, server, file_path)
+        doc = db.GetDocumentByUNID(unid)
+        if doc is None:
+            raise ValueError(f"No document with UNID {unid!r}")
+        return _extract_tables(session, doc)
 
     return backend.run(_op)
 
