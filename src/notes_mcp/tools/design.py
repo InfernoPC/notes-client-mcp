@@ -152,6 +152,15 @@ def list_view_categories(
     categorized column is very often a formula, not a plain field) - so use
     these values directly with find_document_by_key rather than guessing at
     what a document's stored field looks like.
+
+    The value is read from the position of the view's actual *categorized*
+    column, which is not necessarily column 0. Reading ColumnValues[0]
+    unconditionally is wrong and fails silently: on ap\\ISODoc.nsf's
+    "1.All Document By Number", column 0 is a totals column (formula `1`,
+    totals='total') and the categorized column is column 1, so index 0
+    returned each category's document *count* (18, 126, 1104, 465) instead
+    of its name - values that look plausible and are useless for
+    find_document_by_key.
     """
 
     def _op(session):
@@ -159,6 +168,18 @@ def list_view_categories(
         view = db.GetView(view_name)
         if view is None:
             raise ValueError(f"No view named {view_name!r}")
+
+        # One index per categorized column, in view order: a two-level
+        # categorized view has two of them, and a category entry's
+        # IndentLevel says which one holds its value.
+        cat_idxs = [i for i, c in enumerate(view.Columns) if c.IsCategory]
+        if not cat_idxs:
+            raise ValueError(
+                f"View {view_name!r} has no categorized column, so it has no "
+                "categories to list. Use search_view/export_view_csv to read "
+                "its rows instead."
+            )
+
         nav = view.CreateViewNav()
         nav.MaxLevel = max_level
 
@@ -167,7 +188,9 @@ def list_view_categories(
         while entry is not None:
             if entry.IsCategory:
                 values = entry.ColumnValues
-                out.append({"value": values[0] if values else None, "indent_level": entry.IndentLevel})
+                level = entry.IndentLevel
+                idx = cat_idxs[level] if level < len(cat_idxs) else cat_idxs[-1]
+                out.append({"value": values[idx] if idx < len(values) else None, "indent_level": level})
             entry = nav.GetNextCategory(entry)
         return out
 

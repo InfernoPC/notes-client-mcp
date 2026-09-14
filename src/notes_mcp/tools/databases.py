@@ -420,9 +420,88 @@ def search_database(
     return backend.run(_op)
 
 
-def _walk_view_rows(session, server: str, file_path: str, view_name: str, columns, limit: int):
+def _match_value(raw) -> list[str]:
+    """Normalize one ColumnValues slot to the string forms `match` compares
+    against. A multi-value column arrives as a tuple, so each element has to
+    be a candidate in its own right or matching such a column always fails."""
+    items = raw if isinstance(raw, (list, tuple)) else [raw]
+    return ["" if v is None else str(v).strip().casefold() for v in items]
+
+
+def _walk_view_rows(
+    session,
+    server: str,
+    file_path: str,
+    view_name: str,
+    columns,
+    limit: int,
+    include_conflicts: bool = False,
+    include_responses: bool = False,
+    category: str | None = None,
+    match: dict | None = None,
+    skip: int = 0,
+):
     """Shared by search_view and export_view_csv - the icon-column alignment
-    fix (see below) must not be duplicated between the two."""
+    fix (see below) must not be duplicated between the two.
+
+    Replication/save-conflict and response entries are skipped by default,
+    because a view has two layers and this navigator only ever sees the
+    first: what the *index* holds is decided by the selection formula alone,
+    while what the *client draws* is filtered again by the view's display
+    properties. A row the user cannot see in Notes is therefore still
+    returned here.
+
+    Confirmed by hand on ap\\ISODoc.nsf, view "1.All Document By Number":
+    WI-75-04-CT-2228 came out twice. The second document carried $Conflict
+    and $REF -> the winner, and its selection-formula fields (form=ISO,
+    DelDate="", xFlag="9", Tier="3") all matched, so the updater indexed
+    it - but the view is showresponsehierarchy='true' with
+    showhierarchies='false', so the client never draws that response tier
+    (no twistie either - a twistie only appears when the hierarchy really is
+    rendered) and the user sees one row. Measured proof that the client
+    itself does not count it: the view's own totals column reported 1104 for
+    a category this navigator returned 1105 entries for.
+
+    Worse, the conflict is not detectable from the document's fields: every
+    stored item matched the winner, including `docid` (which holds the
+    *winner's* UNID) and `docUrl`. Only the real UniversalID differs, so no
+    downstream de-duplication on a document field can catch it. Views in
+    that database that need clean data say so explicitly in the selection
+    formula - see (RedundancyCheck) and (sally-temp-all-iso), both of which
+    add `& !@IsAvailable($Conflict)`.
+
+    A conflict is judged by IsConflict alone, so it is excluded here whether
+    or not the index also reports it as a response. Set include_conflicts/
+    include_responses to get them back; each adds an
+    `is_conflict`/`is_response` column so an included row is never
+    indistinguishable from a normal one.
+
+    Three optional narrowing controls, deliberately with different
+    mechanisms and different prerequisites:
+
+    `category` restricts the walk to one category via
+    CreateViewNavFromCategory - a real index seek, so it never reads the
+    rest of the view. Requires only that the column be categorized (nest
+    deeper levels as "Cat1\\Cat2"). This is the only filter here that is
+    cheaper than a full scan.
+
+    `match` filters on column values during the walk: {column name: value}
+    or {column name: [value, ...]} (any listed value matches), compared
+    case-insensitively on the string form after stripping. It uses no key
+    lookup at all, so unlike GetDocumentByKey/GetAllEntriesByKey it does
+    NOT need the column to be sorted, let alone to be the view's leading
+    sorted column - which matters because a categorized view's leading
+    sorted column is the category, making a key lookup on any later column
+    impossible. The cost is a full index scan (still no documents opened).
+    Column names are resolved against every non-icon column, so you can
+    filter on a column you did not ask for in `columns`.
+
+    `skip` drops the first N rows that would otherwise have been emitted,
+    for paging alongside `limit`. It is counted here rather than with
+    NotesViewNavigator.Skip because Skip counts *index entries*, which in a
+    categorized view includes the category header rows - so Skip(N) and
+    "N rows of CSV" are not the same N. Note that positional paging is only
+    stable while the view is not changing underneath it."""
     db = open_database(session, server, file_path)
     view = db.GetView(view_name)
     if view is None:
@@ -443,19 +522,72 @@ def _walk_view_rows(session, server: str, file_path: str, view_name: str, column
     else:
         col_defs = all_cols
 
+    # Resolved against all_cols, not col_defs: filtering on a column you
+    # don't want in the output is a normal thing to want.
+    match_defs = []
+    if match:
+        by_name = {name: idx for name, idx in all_cols}
+        for name, accepted in match.items():
+            if name not in by_name:
+                raise ValueError(
+                    f"match refers to column {name!r}, which this view does not have. "
+                    f"Available columns: {sorted(by_name)}"
+                )
+            wanted = accepted if isinstance(accepted, (list, tuple)) else [accepted]
+            match_defs.append((by_name[name], frozenset(str(v).strip().casefold() for v in wanted)))
+
     rows = []
-    nav = view.CreateViewNav()
+    skipped = {"conflicts": 0, "responses": 0, "unmatched": 0, "paged_over": 0}
+    if category is None:
+        nav = view.CreateViewNav()
+    else:
+        nav = view.CreateViewNavFromCategory(category)
     entry = nav.GetFirst()
     count = 0
     while entry is not None and count < limit:
         if entry.IsDocument:
-            values = entry.ColumnValues
-            row = {name: (values[idx] if idx < len(values) else None) for name, idx in col_defs}
-            row["unid"] = entry.UniversalID
-            rows.append(row)
-            count += 1
+            # IsConflict/IsResponse are NotesViewEntry properties read off
+            # the view index - no document is opened to test them.
+            is_conflict = bool(entry.IsConflict)
+            is_response = bool(entry.IsResponse)
+            # A conflict is also a response (it carries $REF to the winner),
+            # so it must be judged by include_conflicts alone - falling
+            # through to the response test would drop the very rows
+            # include_conflicts=True asked for.
+            if is_conflict:
+                keep = include_conflicts
+                if not keep:
+                    skipped["conflicts"] += 1
+            elif is_response:
+                keep = include_responses
+                if not keep:
+                    skipped["responses"] += 1
+            else:
+                keep = True
+            values = entry.ColumnValues if keep else None
+            if keep and match_defs:
+                for idx, accepted in match_defs:
+                    raw = values[idx] if idx < len(values) else None
+                    if not any(c in accepted for c in _match_value(raw)):
+                        keep = False
+                        skipped["unmatched"] += 1
+                        break
+            if keep and skipped["paged_over"] < skip:
+                # Counted only against rows that already passed every
+                # filter, so skip/limit page the same rows the caller sees.
+                skipped["paged_over"] += 1
+                keep = False
+            if keep:
+                row = {name: (values[idx] if idx < len(values) else None) for name, idx in col_defs}
+                row["unid"] = entry.UniversalID
+                if include_conflicts:
+                    row["is_conflict"] = is_conflict
+                if include_responses:
+                    row["is_response"] = is_response
+                rows.append(row)
+                count += 1
         entry = nav.GetNext(entry)
-    return rows
+    return rows, skipped
 
 
 def search_view(
@@ -465,11 +597,38 @@ def search_view(
     view_name: str,
     limit: int = 20,
     columns: list[str] | None = None,
+    include_conflicts: bool = False,
+    include_responses: bool = False,
+    category: str | None = None,
+    match: dict | None = None,
+    skip: int = 0,
 ) -> list[dict]:
     """Walk a view's documents in view order and return column values (fast,
     uses the view index - does not open each document). `columns`, if given,
-    selects a subset by title/item-name rather than renaming positionally."""
-    return backend.run(lambda session: _walk_view_rows(session, server, file_path, view_name, columns, limit))
+    selects a subset by title/item-name rather than renaming positionally.
+
+    Replication/save-conflict and response rows are skipped by default - see
+    _walk_view_rows. Because this returns a bare list there is nowhere to
+    report the skipped count; use export_view_csv (whose result carries
+    `skipped`) when you need to know whether anything was dropped."""
+
+    def _op(session):
+        rows, _skipped = _walk_view_rows(
+            session,
+            server,
+            file_path,
+            view_name,
+            columns,
+            limit,
+            include_conflicts,
+            include_responses,
+            category,
+            match,
+            skip,
+        )
+        return rows
+
+    return backend.run(_op)
 
 
 def export_view_csv(
@@ -480,6 +639,11 @@ def export_view_csv(
     output_path: str | None = None,
     columns: list[str] | None = None,
     limit: int = 10000,
+    include_conflicts: bool = False,
+    include_responses: bool = False,
+    category: str | None = None,
+    match: dict | None = None,
+    skip: int = 0,
 ) -> dict:
     """Export a view's rows straight to a local CSV file (UTF-8 with a BOM,
     so Excel opens non-ASCII text correctly), written from inside this
@@ -489,10 +653,26 @@ def export_view_csv(
     to a side file instead of returned directly).
 
     If output_path is omitted, writes to a generated name in the system temp
-    directory."""
+    directory.
+
+    Replication/save-conflict and response rows are skipped by default (see
+    _walk_view_rows); the result's `skipped` counts say how many, so an
+    exclusion is never silent."""
 
     def _op(session):
-        rows = _walk_view_rows(session, server, file_path, view_name, columns, limit)
+        rows, skipped = _walk_view_rows(
+            session,
+            server,
+            file_path,
+            view_name,
+            columns,
+            limit,
+            include_conflicts,
+            include_responses,
+            category,
+            match,
+            skip,
+        )
         if output_path:
             path = output_path
         else:
@@ -503,6 +683,6 @@ def export_view_csv(
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(rows)
-        return {"output_path": path, "row_count": len(rows)}
+        return {"output_path": path, "row_count": len(rows), "skipped": skipped}
 
     return backend.run(_op)
