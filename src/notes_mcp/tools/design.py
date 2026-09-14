@@ -15,7 +15,20 @@ numbering has been unchanged since early Domino):
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+from ..exports import resolve_output_path
 from ..notes_backend import NotesBackend, open_database
+
+# DXL puts every element in the Lotus namespace, so ElementTree lookups need
+# it prefixed. databases.py carries the same constant for its rich text
+# parsing; a shared one-line string is not worth a cross-module private
+# import.
+_DXL_NS = "{http://www.lotus.com/dxl}"
+
+# <code> wraps exactly one of these per event.
+_CODE_LANGUAGES = ("formula", "lotusscript", "javascript", "actionformula")
 
 # NotesNoteCollection.SelectXxx flags, confirmed by hand against a real
 # database (each of these successfully set to True on Lotus.NotesSession's
@@ -327,31 +340,245 @@ def list_acl(backend: NotesBackend, server: str, file_path: str) -> dict:
     return backend.run(_op)
 
 
+
+# ---- structured design-element readers ----------------------------------
+#
+# export_design_dxl hands back raw XML, which every caller then has to parse
+# itself. Hand-rolled regex parsing of it is a trap that fails *quietly*:
+#
+#   - `<code` and `event=` are separated by however much whitespace the
+#     exporter felt like, so a pattern written as "<code event='x'>" misses
+#     the "<code  event='x'>" the exporter actually emits.
+#   - <field .../> self-closes when it has no code, so locating a field's
+#     end with a naive search for "</field>" runs past it and attributes a
+#     *later* field's formula to this one.
+#
+# The second one yields a perfectly valid-looking formula for the wrong
+# field, which is how an audit of six production NSFs came to report three
+# healthy forms as broken (issue #1). These readers parse with ElementTree
+# instead, scoping every lookup to the element it belongs to, so neither
+# failure is reachable.
+
+
+def _code_events(el) -> dict:
+    """{event: {language, source}} for one element's own <code> children.
+
+    Scoped to direct children on purpose: a <form> is full of <pardef>
+    hidewhen formulas that have nothing to do with the form itself, and an
+    <action>'s own hidewhen must not pick up a neighbour's.
+    """
+    events: dict[str, dict] = {}
+    for code in el.findall(f"{_DXL_NS}code"):
+        event = code.get("event")
+        if not event:
+            continue
+        for language in _CODE_LANGUAGES:
+            node = code.find(f"{_DXL_NS}{language}")
+            if node is not None:
+                events.setdefault(event, {"language": language, "source": (node.text or "").strip()})
+                break
+    return events
+
+
+def _design_notes(dxl: str):
+    """Yield (element_type, element) for each design note in a DXL export."""
+    root = ET.fromstring(dxl)
+    for el in root:
+        if el.get("name") is not None:
+            yield el.tag.replace(_DXL_NS, ""), el
+
+
+def _note_header(element_type: str, el) -> dict:
+    return {
+        "element_type": element_type,
+        "name": el.get("name"),
+        "alias": el.get("alias"),
+        "comment": el.get("comment"),
+    }
+
+
+def _collect_dxl(session, server: str, file_path: str, kinds: list[str], name_filter: str | None) -> str:
+    db = open_database(session, server, file_path)
+    nc = db.CreateNoteCollection(False)
+    for kind in kinds:
+        flag = _NOTE_KIND_FLAGS.get(kind)
+        if flag is None:
+            raise ValueError(f"Unknown kind {kind!r}, must be one of {sorted(_NOTE_KIND_FLAGS)}")
+        setattr(nc, flag, True)
+    if name_filter:
+        lowered = name_filter.lower()
+        nc.SelectionFormula = '@Contains(@LowerCase($TITLE); "' + lowered + '")'
+    nc.BuildCollection()
+    return _export_dxl(session, nc)
+
+
+def list_form_fields(
+    backend: NotesBackend,
+    server: str,
+    file_path: str,
+    name_filter: str | None = None,
+    kinds: list[str] | None = None,
+) -> list[dict]:
+    """Every field of the matching forms/subforms, with its formulas.
+
+    `name_filter` is a case-insensitive substring match on the design note
+    title, the same as export_design_dxl - so it can match several notes
+    (a form and its "-backup20240101" copy, or two forms sharing a name but
+    differing by alias), and the result is a list of notes rather than one.
+
+    Fields come back in the order DXL emits them, which is form layout
+    order. A name can legitimately appear more than once when a form defines
+    the same field twice; duplicates are kept rather than collapsed, because
+    which one wins at runtime is not a question this tool should answer by
+    silently dropping data.
+    """
+
+    def _op(session):
+        dxl = _collect_dxl(session, server, file_path, kinds or ["forms", "subforms"], name_filter)
+        notes = []
+        for element_type, el in _design_notes(dxl):
+            fields = []
+            for f in el.iter(f"{_DXL_NS}field"):
+                fields.append(
+                    {
+                        "name": f.get("name"),
+                        "type": f.get("type"),
+                        "kind": f.get("kind"),
+                        "allow_multi_values": f.get("allowmultivalues") == "true",
+                        "events": _code_events(f),
+                    }
+                )
+            notes.append({**_note_header(element_type, el), "fields": fields})
+        return notes
+
+    return backend.run(_op)
+
+
+def list_design_actions(
+    backend: NotesBackend,
+    server: str,
+    file_path: str,
+    name_filter: str | None = None,
+    kinds: list[str] | None = None,
+) -> list[dict]:
+    """Every action button of the matching design notes, with its click and
+    hidewhen code.
+
+    Action titles use a backslash for submenus, and the same title can
+    appear twice on one note when an old version was kept alongside a new
+    one - both are returned as-is, in action bar order. `shared` marks an
+    action pulled in from the database's shared actions via
+    <sharedactionref>.
+    """
+
+    def _op(session):
+        dxl = _collect_dxl(session, server, file_path, kinds or ["forms", "subforms", "views"], name_filter)
+        notes = []
+        for element_type, el in _design_notes(dxl):
+            shared_ids = {
+                id(a) for ref in el.iter(f"{_DXL_NS}sharedactionref") for a in ref.iter(f"{_DXL_NS}action")
+            }
+            actions = []
+            for a in el.iter(f"{_DXL_NS}action"):
+                actions.append(
+                    {
+                        "title": a.get("title"),
+                        "icon": a.get("icon"),
+                        "hide": a.get("hide"),
+                        "show_in_bar": a.get("showinbar") != "false",
+                        "system_command": a.get("systemcommand"),
+                        "shared": id(a) in shared_ids,
+                        "events": _code_events(a),
+                    }
+                )
+            notes.append({**_note_header(element_type, el), "actions": actions})
+        return notes
+
+    return backend.run(_op)
+
+
+def list_subform_refs(
+    backend: NotesBackend,
+    server: str,
+    file_path: str,
+    name_filter: str | None = None,
+    kinds: list[str] | None = None,
+) -> list[dict]:
+    """Which subforms the matching forms pull in, and how.
+
+    A <subformref> is one of two things, and telling them apart is usually
+    the whole question when tracing which version of a layout a document
+    actually renders:
+
+    - static: `name` is the subform's name (or "name | alias"), fixed.
+    - computed: no `name`; a `value` formula decides at render time. The
+      formula is returned verbatim - it typically keys off a hidden field
+      holding a layout version, so reading it is the only way to know which
+      subform a given document gets.
+    """
+
+    def _op(session):
+        dxl = _collect_dxl(session, server, file_path, kinds or ["forms", "subforms"], name_filter)
+        notes = []
+        for element_type, el in _design_notes(dxl):
+            refs = []
+            for ref in el.iter(f"{_DXL_NS}subformref"):
+                name = ref.get("name")
+                events = _code_events(ref)
+                refs.append(
+                    {
+                        "static_name": name,
+                        "is_computed": name is None,
+                        "formula": events.get("value", {}).get("source"),
+                    }
+                )
+            notes.append({**_note_header(element_type, el), "subform_refs": refs})
+        return notes
+
+    return backend.run(_op)
+
+
 def export_design_dxl(
     backend: NotesBackend,
     server: str,
     file_path: str,
     kinds: list[str] | None = None,
     name_filter: str | None = None,
-) -> str:
+    output_path: str | None = None,
+) -> str | dict:
     """Export selected design notes as one DXL (XML) document, including
     full agent LotusScript/formula source, form/view formulas, and (for
     kinds without individual listing, like "actions"/shared actions) their
     full contents. `kinds` defaults to ["forms", "views", "agents"]; see
-    design.py's _NOTE_KIND_FLAGS for every valid value."""
+    design.py's _NOTE_KIND_FLAGS for every valid value.
+
+    Pass `output_path` to write the DXL to a file and get back
+    {output_path, size_bytes, ...} instead of the document itself. Real
+    exports run 100 KB - 2.3 MB, well past what a single tool result can
+    carry, so writing to disk is usually what you want; see exports.py for
+    where a relative or omitted path lands.
+
+    Prefer list_form_fields / list_design_actions / list_subform_refs when
+    you want a specific formula rather than the whole document. **Do not
+    parse this output with regular expressions** - DXL puts arbitrary
+    whitespace between `<code` and `event=`, and self-closes `<field/>`
+    when it has no code, so the obvious patterns silently attribute one
+    element's formula to another. Parse it as XML (ElementTree), the way
+    those three tools do.
+    """
 
     def _op(session):
         selected = kinds or ["forms", "views", "agents"]
-        db = open_database(session, server, file_path)
-        nc = db.CreateNoteCollection(False)
-        for kind in selected:
-            flag = _NOTE_KIND_FLAGS.get(kind)
-            if flag is None:
-                raise ValueError(f"Unknown kind {kind!r}, must be one of {sorted(_NOTE_KIND_FLAGS)}")
-            setattr(nc, flag, True)
-        if name_filter:
-            nc.SelectionFormula = f'@Contains(@LowerCase($TITLE); "{name_filter.lower()}")'
-        nc.BuildCollection()
-        return _export_dxl(session, nc)
+        dxl = _collect_dxl(session, server, file_path, selected, name_filter)
+        if not output_path:
+            return dxl
+        path = resolve_output_path(output_path, Path(file_path).stem, "design", suffix=".dxl.xml")
+        path.write_text(dxl, encoding="utf-8")
+        return {
+            "output_path": str(path),
+            "size_bytes": path.stat().st_size,
+            "kinds": selected,
+            "name_filter": name_filter,
+        }
 
     return backend.run(_op)
