@@ -285,19 +285,77 @@ def list_acl(server_name: str, file_path: str) -> dict:
     return design.list_acl(backend, server_name, file_path)
 
 
+def list_form_fields(
+    server_name: str,
+    file_path: str,
+    name_filter: str | None = None,
+    kinds: list[str] | None = None,
+) -> list[dict]:
+    """Every field of the matching forms/subforms, with its formulas
+    (defaultvalue, inputvalidation, inputtranslation, hidewhen, ...) already
+    parsed out of DXL - use this instead of export_design_dxl when you want
+    to know what a field computes. `name_filter` is a case-insensitive
+    substring match on the design note title, so it can match several notes
+    and the result is a list of them. `kinds` defaults to
+    ["forms", "subforms"]."""
+    return design.list_form_fields(backend, server_name, file_path, name_filter, kinds)
+
+
+def list_design_actions(
+    server_name: str,
+    file_path: str,
+    name_filter: str | None = None,
+    kinds: list[str] | None = None,
+) -> list[dict]:
+    """Every action button of the matching design notes, with its click and
+    hidewhen code - the fastest way to answer "who can press this, and what
+    does it do". Titles use a backslash for submenus. `kinds` defaults to
+    ["forms", "subforms", "views"]."""
+    return design.list_design_actions(backend, server_name, file_path, name_filter, kinds)
+
+
+def list_subform_refs(
+    server_name: str,
+    file_path: str,
+    name_filter: str | None = None,
+    kinds: list[str] | None = None,
+) -> list[dict]:
+    """Which subforms the matching forms pull in, and whether each reference
+    is static or computed. A computed one returns its `value` formula
+    verbatim - that formula is usually what decides which version of a
+    layout a given document renders, so it is the thing to read when tracing
+    that. `kinds` defaults to ["forms", "subforms"]."""
+    return design.list_subform_refs(backend, server_name, file_path, name_filter, kinds)
+
+
 def export_design_dxl(
     server_name: str,
     file_path: str,
     kinds: list[str] | None = None,
     name_filter: str | None = None,
-) -> str:
+    output_path: str | None = None,
+) -> str | dict:
     """Export selected design notes as DXL (XML), including full agent
     LotusScript/formula source, form/view formulas, and (for kinds without
     individual listing, like "actions"/shared actions) their full contents.
     `kinds` defaults to ["forms", "views", "agents"] - see
     list_design_elements's docstring for every valid value. Requires
-    Designer-level ACL access on the target database."""
-    return design.export_design_dxl(backend, server_name, file_path, kinds, name_filter)
+    Designer-level ACL access on the target database.
+
+    Pass `output_path` to write the DXL to a file and get back
+    {output_path, size_bytes, ...} instead of the document itself. Real
+    exports run 100 KB - 2.3 MB, past what one tool result can carry, so
+    writing to disk is usually what you want; a relative or omitted path
+    lands under the export directory (NOTES_MCP_EXPORT_DIR, default
+    <cwd>/notes-exports).
+
+    Prefer list_form_fields / list_design_actions / list_subform_refs when
+    you want one specific formula. **Do not parse this output with regular
+    expressions** - DXL puts arbitrary whitespace between `<code` and
+    `event=`, and self-closes `<field/>` when it has no code, so the obvious
+    patterns silently attribute one element's formula to another. Parse it
+    as XML."""
+    return design.export_design_dxl(backend, server_name, file_path, kinds, name_filter, output_path)
 
 
 # ---- write tools (each requires interactive confirmation) ----------------
@@ -361,6 +419,9 @@ _TOOL_FUNCS: dict[str, object] = {
     "list_design_elements": list_design_elements,
     "get_database_settings": get_database_settings,
     "list_acl": list_acl,
+    "list_form_fields": list_form_fields,
+    "list_design_actions": list_design_actions,
+    "list_subform_refs": list_subform_refs,
     "export_design_dxl": export_design_dxl,
     "create_document": create_document,
     "update_document": update_document,

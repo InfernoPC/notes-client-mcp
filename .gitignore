@@ -14,3 +14,7 @@ dist/
 # Local machine paths (e.g. your Python interpreter path) - never commit.
 # See .mcp.json.example for the template.
 .mcp.json
+
+# Unified export directory for view CSVs, extracted media and DXL dumps.
+# See src/notes_mcp/exports.py (override with NOTES_MCP_EXPORT_DIR).
+notes-exports/

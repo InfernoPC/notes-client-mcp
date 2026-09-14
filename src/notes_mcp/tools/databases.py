@@ -10,10 +10,10 @@ from __future__ import annotations
 import base64
 import csv
 import re
-import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
+from ..exports import resolve_output_dir, resolve_output_path
 from ..notes_backend import NotesBackend, open_database
 
 _DXL_NS = "{http://www.lotus.com/dxl}"
@@ -121,11 +121,7 @@ def _extract_media(session, doc, unid: str, output_dir: str | None) -> list[dict
     """Shared by extract_document_media and read_document(include_media=True) -
     see extract_document_media's docstring for the two extraction mechanisms
     this implements and why both are needed."""
-    if output_dir:
-        out_dir = Path(output_dir)
-    else:
-        out_dir = Path(tempfile.gettempdir()) / f"notes_media_{unid}"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = resolve_output_dir(output_dir, "media", unid)
 
     results = []
 
@@ -160,6 +156,10 @@ def _extract_media(session, doc, unid: str, output_dir: str | None) -> list[dict
     exporter.ConvertNotesBitmapsToGIF = True
     dxl = exporter.Export(doc)
 
+    # Matching the *attribute-less* opening tag is the filter, not an
+    # oversight: the exporter tags auto-generated attachment/OLE thumbnails
+    # as <gif originalformat='notesbitmap'>, and those are exactly what this
+    # is meant to skip (see docstring). Do not "fix" these into <gif[^>]*>.
     patterns = [
         ("inline_image", "gif", r"<gif>(.*?)</gif>"),
         ("inline_image", "jpg", r"<jpeg>(.*?)</jpeg>"),
@@ -673,11 +673,7 @@ def export_view_csv(
             match,
             skip,
         )
-        if output_path:
-            path = output_path
-        else:
-            safe_name = "".join(c if c.isalnum() or c in "-_" else "_" for c in view_name)
-            path = str(Path(tempfile.gettempdir()) / f"{safe_name}.csv")
+        path = str(resolve_output_path(output_path, Path(file_path).stem, view_name, suffix=".csv"))
         fieldnames = list(rows[0].keys()) if rows else []
         with open(path, "w", newline="", encoding="utf-8-sig") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
