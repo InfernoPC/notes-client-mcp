@@ -137,20 +137,20 @@ def search_view(
     limit: int = 20,
     columns: list[str] | None = None,
     include_conflicts: bool = False,
-    include_responses: bool = False,
     category: str | None = None,
     match: dict | None = None,
     skip: int = 0,
 ) -> list[dict]:
     """List rows from a view/folder in view order (fast index scan).
 
-    Replication/save-conflict and response rows are skipped by default: a
-    conflict is a separate document the view index does return, and its
-    stored fields can be byte-identical to the winning document's, so it
-    otherwise shows up as a duplicate row that nothing downstream can tell
-    apart. Set include_conflicts/include_responses to get them, which also
-    adds an is_conflict/is_response column. This returns a bare list, so the
-    skipped count is not reported - use export_view_csv if you need it."""
+    Replication/save-conflict rows are skipped by default: a conflict is a
+    separate document the view index does return, and its stored fields can
+    be byte-identical to the winning document's, so it otherwise shows up as
+    a duplicate row that nothing downstream can tell apart. Set
+    include_conflicts to get them, which also adds an is_conflict column.
+    Responses are not filtered out - put that in the view's selection formula
+    if you need it. This returns a bare list, so the skipped count is not
+    reported - use export_view_csv if you need it."""
     return databases.search_view(
         backend,
         server_name,
@@ -159,7 +159,6 @@ def search_view(
         limit,
         columns,
         include_conflicts,
-        include_responses,
         category,
         match,
         skip,
@@ -174,7 +173,6 @@ def export_view_csv(
     columns: list[str] | None = None,
     limit: int = 10000,
     include_conflicts: bool = False,
-    include_responses: bool = False,
     category: str | None = None,
     match: dict | None = None,
     skip: int = 0,
@@ -184,13 +182,14 @@ def export_view_csv(
     tool result could carry). Defaults to a generated path in the system
     temp directory if output_path is omitted.
 
-    Replication/save-conflict and response rows are skipped by default: a
-    conflict is a separate document the view index does return, and its
-    stored fields can be byte-identical to the winning document's, so it
-    otherwise shows up as a duplicate row that nothing downstream can tell
-    apart. Set include_conflicts/include_responses to get them, which also
-    adds an is_conflict/is_response column. The result's `skipped` counts
-    report how many rows each exclusion dropped."""
+    Replication/save-conflict rows are skipped by default: a conflict is a
+    separate document the view index does return, and its stored fields can
+    be byte-identical to the winning document's, so it otherwise shows up as
+    a duplicate row that nothing downstream can tell apart. Set
+    include_conflicts to get them, which also adds an is_conflict column.
+    Responses are not filtered out - put that in the view's selection formula
+    if you need it. The result's `skipped` counts report how many rows each
+    exclusion dropped."""
     return databases.export_view_csv(
         backend,
         server_name,
@@ -200,7 +199,6 @@ def export_view_csv(
         columns,
         limit,
         include_conflicts,
-        include_responses,
         category,
         match,
         skip,
