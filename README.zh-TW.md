@@ -191,6 +191,38 @@ Write（`write` profile，額外新增——**每一個都會先透過 MCP elici
 應該讓對方使用（或幫對方準備）一個在相關資料庫上 ACL 存取等級是 Reader 以下的 ID 檔案——不要只
 依賴 `read` profile 的註冊設定。
 
+## 更新檢查（只告知，絕不自動更新）
+
+Server 啟動時會問 `origin` 有沒有更新的 `vX.Y.Z` tag。有的話，就把該版本
+**新增／移除／新增參數**的工具**名稱**附加到 MCP `instructions`，讓 AI 能
+看見「有個適合這件事的工具，只是現在搆不到」並主動告訴你 —— 而不是自己
+手刻一個替代方案繞過去。
+
+不會替你更新任何東西。通知裡直接帶著指令，而「要不要完整重啟」是靠比對
+兩份 `pyproject.toml` 的依賴清單決定的：沒變就 `git pull` 加 `/mcp` 重連
+即可；有變就必須先完全關閉 Claude Code，因為跑著的 server 正 load 著
+pywin32 的 DLL，Windows 會鎖檔讓 pip 裝不上去。
+
+怎麼做到又省又安全：
+
+- **兩段式。** `git ls-remote --tags origin` 不下載任何 object，而且在你已是
+  最新版時（也就是絕大多數 session）就只會跑這一段。只有發現更新的 tag 才
+  `git fetch` 那一個 tag。
+- **只 `fetch`，絕不 `pull`。** fetch 下來的 object 躺在 `.git/` 裡，工作目錄
+  完全不動、什麼都不會執行。`pull` 會覆寫這個 process 已經 import 的程式碼，
+  導致它回報的版本與實際行為對不上。
+- 遠端的工具清單用 `ast.parse` 讀，**絕不 import** —— import 抓下來的程式碼
+  去列舉它的工具，等於執行你正想避免信任的那份程式碼。
+- 只有識別字會進到 AI 的 context（工具名稱、profile 標籤、參數名稱、點分版本
+  號），每一項都經過嚴格 pattern 驗證。遠端的 docstring 與 changelog 文字
+  一律不讀，所以 push 不進指令。對照上面的安全模型：這是針對 mirror 被竄改、
+  誤 merge 這類較弱情況的廉價防護，擋不住能 push 到 `origin` 的人 —— 那種人
+  本來就能讓程式碼在這個 process 裡執行。
+- `origin` 寫死；公開 mirror 的信任等級不同，不可混用。
+- 結果快取 6 小時、同一個版本只講一次不重複嘮叨，任何失敗（離線、沒有 git、
+  逾時、用 wheel 安裝而沒有 `.git`）都靜默略過。設 `NOTES_MCP_UPDATE_CHECK=0`
+  可完全關閉。
+
 ## 已知限制
 
 - 如果你的 MCP client 同時註冊多個 profile（例如 `.mcp.json.example` 裡的四個都開），它們的

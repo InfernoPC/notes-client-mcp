@@ -260,6 +260,44 @@ actually hold even against a misbehaving or over-eager AI agent, give them
 (or have them use) an ID file whose ACL access on the databases in question
 is Reader or lower - don't rely on `read`-profile registration alone.
 
+## Update check (tells you; never updates)
+
+At startup the server asks `origin` whether a newer `vX.Y.Z` tag exists. If
+one does, the **names** of the tools it adds, removes, or gives new
+parameters to are appended to the server's MCP `instructions`, so the
+assistant can see that a tool fitting the task exists but isn't reachable
+yet - and say so - instead of hand-rolling a workaround for it.
+
+Nothing is ever updated for you. The notice carries the exact commands, and
+whether a full restart is needed is decided by comparing the two
+`pyproject.toml` dependency lists: unchanged means `git pull` plus a `/mcp`
+reconnect is enough, changed means Claude Code has to be closed first,
+because pip cannot replace a package whose DLL the running server holds
+open.
+
+How it stays cheap and safe:
+
+- Two stages. `git ls-remote --tags origin` downloads no objects and is all
+  that runs when you're up to date - which is nearly every session. Only a
+  newer tag triggers `git fetch` of that one tag.
+- **`fetch`, never `pull`.** Fetched objects sit in `.git/`; the working
+  tree is untouched and nothing new executes. A `pull` would replace code
+  this process already imported, leaving the version it reports and the
+  behaviour it has disagreeing.
+- The remote's tool list is read with `ast.parse`, **never by importing
+  it** - importing fetched code to enumerate its tools would execute the
+  code we declined to trust.
+- Only identifiers reach the assistant (tool names, profile tags, parameter
+  names, a dotted version), each checked against a strict pattern. Remote
+  docstrings and changelog prose are deliberately never read, so a push
+  can't inject instructions. Per the security model above, this is cheap
+  defence against a tampered mirror or a bad merge - not against someone
+  who can push to `origin`, who can already run code in this process.
+- `origin` is hard-coded; a public mirror is not equally trusted.
+- Results cache for 6 hours, a version is mentioned once and not repeated,
+  and every failure (offline, no git, timeout, wheel install with no
+  `.git`) is silent. Set `NOTES_MCP_UPDATE_CHECK=0` to switch it off.
+
 ## Known limitations
 
 - If your MCP client registers multiple profiles at once (e.g. all four in
