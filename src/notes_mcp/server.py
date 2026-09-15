@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 from mcp.server.mcpserver import Context, MCPServer
 from pydantic import BaseModel, Field
 
+from . import updates
 from .notes_backend import NotesBackend, NotesConnectionError
 from .tiers import PROFILES, TOOL_TAGS
 from .tools import databases, design, write
@@ -41,16 +42,15 @@ from .tools import databases, design, write
 # order and the explicitly-chosen plaintext-on-disk trade-off this represents.
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
-server = MCPServer(
-    name="notes-client-mcp",
-    instructions=(
-        "Access to the local HCL Notes Client (mail, databases, and NSF "
-        "design elements) via backend COM automation. Requires the HCL "
-        "Notes Client to be installed and the user's ID file available on "
-        "this machine. Write tools ask the user for interactive "
-        "confirmation before making any change."
-    ),
+_BASE_INSTRUCTIONS = (
+    "Access to the local HCL Notes Client (mail, databases, and NSF "
+    "design elements) via backend COM automation. Requires the HCL "
+    "Notes Client to be installed and the user's ID file available on "
+    "this machine. Write tools ask the user for interactive "
+    "confirmation before making any change."
 )
+
+server = MCPServer(name="notes-client-mcp", instructions=_BASE_INSTRUCTIONS)
 
 backend = NotesBackend()
 
@@ -438,7 +438,24 @@ def register_tools(profile: str) -> None:
 
 
 def main(profile: str | None = None) -> None:
+    global server
+
     profile = profile or os.environ.get("NOTES_MCP_PROFILE", "read")
+
+    # MCPServer.instructions is a read-only property and the client only ever
+    # reads it once, at initialize - so an update notice has to be in place
+    # before the object is built. Rebuilding here rather than reaching into
+    # the SDK's private lowlevel server keeps this on the public API; the
+    # constructor does no I/O, and tools are registered onto whichever
+    # instance this leaves behind.
+    notice = updates.startup_notice()
+    if notice:
+        server = MCPServer(
+            name="notes-client-mcp",
+            instructions=f"{_BASE_INSTRUCTIONS}\n\n{notice}",
+        )
+        print(f"notes-client-mcp: {notice.splitlines()[0]}", file=sys.stderr)
+
     register_tools(profile)
 
     print("notes-client-mcp: connecting to HCL Notes...", file=sys.stderr)
