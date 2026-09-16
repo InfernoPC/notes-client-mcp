@@ -360,6 +360,33 @@ def list_acl(backend: NotesBackend, server: str, file_path: str) -> dict:
 # failure is reachable.
 
 
+def _code_source(node) -> str:
+    """The full text of a <formula>/<lotusscript> element.
+
+    Not `node.text`: that stops dead at the first child element, and these
+    elements really do have children. Notes lets a formula contain control
+    characters - the diamond bullet 0x04 is all over hand-formatted REM
+    blocks - and DXL cannot put those in text, so it emits
+    `<nonxmlchar value='0004'/>` mid-formula and continues in that child's
+    tail. Reading only .text therefore returns the formula up to the first
+    such character and silently drops everything after it, which in one
+    QNP flow subform meant losing the entire stage-advance rule and seeing
+    an unterminated `REM {` where the real code was fine (issue #5).
+    """
+    parts = [node.text or ""]
+    for child in node:
+        if child.tag == f"{_DXL_NS}nonxmlchar":
+            raw = child.get("value") or ""
+            try:
+                parts.append(chr(int(raw, 16)))
+            except ValueError:
+                pass  # unparseable escape: drop the char, keep the formula
+        else:
+            parts.append(_code_source(child))
+        parts.append(child.tail or "")
+    return "".join(parts)
+
+
 def _code_events(el) -> dict:
     """{event: {language, source}} for one element's own <code> children.
 
@@ -375,7 +402,7 @@ def _code_events(el) -> dict:
         for language in _CODE_LANGUAGES:
             node = code.find(f"{_DXL_NS}{language}")
             if node is not None:
-                events.setdefault(event, {"language": language, "source": (node.text or "").strip()})
+                events.setdefault(event, {"language": language, "source": _code_source(node).strip()})
                 break
     return events
 

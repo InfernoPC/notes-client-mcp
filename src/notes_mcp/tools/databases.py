@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from ..exports import resolve_output_dir, resolve_output_path
-from ..notes_backend import NotesBackend, open_database
+from ..notes_backend import NotesBackend, open_database, open_database_by_replica_id
 
 _DXL_NS = "{http://www.lotus.com/dxl}"
 
@@ -79,6 +79,58 @@ def get_database_info(backend: NotesBackend, server: str, file_path: str) -> dic
             "server": db.Server,
             "file_path": db.FilePath,
             "title": db.Title,
+            "size_bytes": db.Size,
+            "is_ft_indexed": db.IsFTIndexed,
+        }
+
+    return backend.run(_op)
+
+
+def get_database_by_replica_id(
+    backend: NotesBackend,
+    replica_id: str,
+    server: str = "",
+) -> dict | None:
+    """Resolve a database by replica ID and return the same metadata
+    get_database_info returns, plus the `file_path` every other tool in this
+    server needs - the point of this tool is to turn a replica ID into that
+    server/file_path pair.
+
+    Replica IDs are what cross-database links actually store: an outline's
+    `<databaselink database='4825666C0023AB44'/>`, a `<viewlink>`/doclink, a
+    `notes://server/<16 hex>/...` URL, a database's Replication Properties.
+    None of those carry a file path, and session.GetDatabase - which every
+    other tool goes through - only takes a path, so a replica ID used to be
+    a dead end that could only be guessed at.
+
+    `replica_id` may be the bare 16-hex form ("48257B98001E8842") or the
+    colon-separated form ("48257B98:001E8842"); either is accepted.
+
+    A replica ID names a replica *set*, not a location, so the lookup is
+    scoped to one server at a time: `server` is a Notes hierarchical name in
+    abbreviated form (e.g. "Server1/ACME"), and defaults to "" - the local
+    Notes data directory. If a link came from a database on one server, that
+    server is the first place to look, but a replica ID travels with copies
+    of the design, so the replica it points at may well live elsewhere; call
+    this once per candidate server.
+
+    Returns None (not an error) when that server holds no such replica, so a
+    hunt across candidate servers is a normal sequence of calls rather than
+    a sequence of failures. A replica the current user has no access to is
+    indistinguishable from an absent one and also returns None. Note that
+    scanning a server's directory for a replica ID is a directory scan, not
+    an index lookup - it is slower than get_database_info with a known path,
+    so prefer the path once you have it."""
+
+    def _op(session):
+        db = open_database_by_replica_id(session, server, replica_id)
+        if db is None:
+            return None
+        return {
+            "server": db.Server,
+            "file_path": db.FilePath,
+            "title": db.Title,
+            "replica_id": db.ReplicaID,
             "size_bytes": db.Size,
             "is_ft_indexed": db.IsFTIndexed,
         }
@@ -436,7 +488,6 @@ def _walk_view_rows(
     columns,
     limit: int,
     include_conflicts: bool = False,
-    include_responses: bool = False,
     category: str | None = None,
     match: dict | None = None,
     skip: int = 0,
@@ -444,12 +495,11 @@ def _walk_view_rows(
     """Shared by search_view and export_view_csv - the icon-column alignment
     fix (see below) must not be duplicated between the two.
 
-    Replication/save-conflict and response entries are skipped by default,
-    because a view has two layers and this navigator only ever sees the
-    first: what the *index* holds is decided by the selection formula alone,
-    while what the *client draws* is filtered again by the view's display
-    properties. A row the user cannot see in Notes is therefore still
-    returned here.
+    Replication/save-conflict entries are skipped by default, because a view
+    has two layers and this navigator only ever sees the first: what the
+    *index* holds is decided by the selection formula alone, while what the
+    *client draws* is filtered again by the view's display properties. A row
+    the user cannot see in Notes is therefore still returned here.
 
     Confirmed by hand on ap\\ISODoc.nsf, view "1.All Document By Number":
     WI-75-04-CT-2228 came out twice. The second document carried $Conflict
@@ -470,11 +520,18 @@ def _walk_view_rows(
     formula - see (RedundancyCheck) and (sally-temp-all-iso), both of which
     add `& !@IsAvailable($Conflict)`.
 
-    A conflict is judged by IsConflict alone, so it is excluded here whether
-    or not the index also reports it as a response. Set include_conflicts/
-    include_responses to get them back; each adds an
-    `is_conflict`/`is_response` column so an included row is never
-    indistinguishable from a normal one.
+    A conflict is judged by IsConflict alone - a NotesViewEntry property read
+    straight off the index, so no document is opened to test it. Set
+    include_conflicts to get conflicts back; it adds an `is_conflict` column
+    so an included row is never indistinguishable from a normal one.
+
+    Responses are deliberately *not* filtered here. NotesViewEntry has no
+    IsResponse property at all (late-bound COM raises
+    `AttributeError: GetFirst.IsResponse` on the first document entry), and
+    response-ness lives only in the document's $REF - so testing it would
+    mean opening every row's document, giving up the one property that makes
+    this walk cheap. A view that must exclude responses says so in its own
+    selection formula, which costs nothing at walk time.
 
     Three optional narrowing controls, deliberately with different
     mechanisms and different prerequisites:
@@ -537,7 +594,7 @@ def _walk_view_rows(
             match_defs.append((by_name[name], frozenset(str(v).strip().casefold() for v in wanted)))
 
     rows = []
-    skipped = {"conflicts": 0, "responses": 0, "unmatched": 0, "paged_over": 0}
+    skipped = {"conflicts": 0, "unmatched": 0, "paged_over": 0}
     if category is None:
         nav = view.CreateViewNav()
     else:
@@ -546,24 +603,12 @@ def _walk_view_rows(
     count = 0
     while entry is not None and count < limit:
         if entry.IsDocument:
-            # IsConflict/IsResponse are NotesViewEntry properties read off
-            # the view index - no document is opened to test them.
+            # IsConflict is a NotesViewEntry property read off the view
+            # index - no document is opened to test it.
             is_conflict = bool(entry.IsConflict)
-            is_response = bool(entry.IsResponse)
-            # A conflict is also a response (it carries $REF to the winner),
-            # so it must be judged by include_conflicts alone - falling
-            # through to the response test would drop the very rows
-            # include_conflicts=True asked for.
-            if is_conflict:
-                keep = include_conflicts
-                if not keep:
-                    skipped["conflicts"] += 1
-            elif is_response:
-                keep = include_responses
-                if not keep:
-                    skipped["responses"] += 1
-            else:
-                keep = True
+            keep = include_conflicts if is_conflict else True
+            if is_conflict and not keep:
+                skipped["conflicts"] += 1
             values = entry.ColumnValues if keep else None
             if keep and match_defs:
                 for idx, accepted in match_defs:
@@ -582,8 +627,6 @@ def _walk_view_rows(
                 row["unid"] = entry.UniversalID
                 if include_conflicts:
                     row["is_conflict"] = is_conflict
-                if include_responses:
-                    row["is_response"] = is_response
                 rows.append(row)
                 count += 1
         entry = nav.GetNext(entry)
@@ -598,7 +641,6 @@ def search_view(
     limit: int = 20,
     columns: list[str] | None = None,
     include_conflicts: bool = False,
-    include_responses: bool = False,
     category: str | None = None,
     match: dict | None = None,
     skip: int = 0,
@@ -607,7 +649,7 @@ def search_view(
     uses the view index - does not open each document). `columns`, if given,
     selects a subset by title/item-name rather than renaming positionally.
 
-    Replication/save-conflict and response rows are skipped by default - see
+    Replication/save-conflict rows are skipped by default - see
     _walk_view_rows. Because this returns a bare list there is nowhere to
     report the skipped count; use export_view_csv (whose result carries
     `skipped`) when you need to know whether anything was dropped."""
@@ -621,7 +663,6 @@ def search_view(
             columns,
             limit,
             include_conflicts,
-            include_responses,
             category,
             match,
             skip,
@@ -640,7 +681,6 @@ def export_view_csv(
     columns: list[str] | None = None,
     limit: int = 10000,
     include_conflicts: bool = False,
-    include_responses: bool = False,
     category: str | None = None,
     match: dict | None = None,
     skip: int = 0,
@@ -655,7 +695,7 @@ def export_view_csv(
     If output_path is omitted, writes to a generated name in the system temp
     directory.
 
-    Replication/save-conflict and response rows are skipped by default (see
+    Replication/save-conflict rows are skipped by default (see
     _walk_view_rows); the result's `skipped` counts say how many, so an
     exclusion is never silent."""
 
@@ -668,7 +708,6 @@ def export_view_csv(
             columns,
             limit,
             include_conflicts,
-            include_responses,
             category,
             match,
             skip,

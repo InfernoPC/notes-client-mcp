@@ -1,6 +1,6 @@
 [project]
 name = "notes-client-mcp"
-version = "1.2.0"
+version = "1.2.1"
 description = "MCP access to a local HCL Notes Client via backend COM automation"
 requires-python = ">=3.10"
 dependencies = [

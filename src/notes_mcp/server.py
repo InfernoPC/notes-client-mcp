@@ -77,6 +77,25 @@ def get_database_info(server_name: str, file_path: str) -> dict:
     return databases.get_database_info(backend, server_name, file_path)
 
 
+def get_database_by_replica_id(replica_id: str, server_name: str = "") -> dict | None:
+    """Resolve a database by replica ID into the server + file_path pair every
+    other tool here needs, plus the usual metadata (title, size, FT index).
+
+    Use this whenever you have a replica ID and no path: a cross-database
+    link in an outline/doclink (`database='4825666C0023AB44'`), a
+    `notes://server/<16 hex>/...` URL, a Replication Properties dialog. Both
+    the bare 16-hex form and the colon-separated form are accepted.
+
+    The lookup is scoped to one server - `server_name` defaults to "" (the
+    local data directory), so pass the server you expect the replica on, and
+    call it again per candidate server if that misses. Returns null (not an
+    error) when that server holds no such replica, or when the current user
+    cannot open it; those two cases are indistinguishable. Scanning for a
+    replica ID is a directory scan, so once you have the file_path, use it
+    with get_database_info/the other tools instead of repeating this."""
+    return databases.get_database_by_replica_id(backend, replica_id, server_name)
+
+
 def read_document(
     server_name: str,
     file_path: str,
@@ -137,20 +156,20 @@ def search_view(
     limit: int = 20,
     columns: list[str] | None = None,
     include_conflicts: bool = False,
-    include_responses: bool = False,
     category: str | None = None,
     match: dict | None = None,
     skip: int = 0,
 ) -> list[dict]:
     """List rows from a view/folder in view order (fast index scan).
 
-    Replication/save-conflict and response rows are skipped by default: a
-    conflict is a separate document the view index does return, and its
-    stored fields can be byte-identical to the winning document's, so it
-    otherwise shows up as a duplicate row that nothing downstream can tell
-    apart. Set include_conflicts/include_responses to get them, which also
-    adds an is_conflict/is_response column. This returns a bare list, so the
-    skipped count is not reported - use export_view_csv if you need it."""
+    Replication/save-conflict rows are skipped by default: a conflict is a
+    separate document the view index does return, and its stored fields can
+    be byte-identical to the winning document's, so it otherwise shows up as
+    a duplicate row that nothing downstream can tell apart. Set
+    include_conflicts to get them, which also adds an is_conflict column.
+    Responses are not filtered out - put that in the view's selection formula
+    if you need it. This returns a bare list, so the skipped count is not
+    reported - use export_view_csv if you need it."""
     return databases.search_view(
         backend,
         server_name,
@@ -159,7 +178,6 @@ def search_view(
         limit,
         columns,
         include_conflicts,
-        include_responses,
         category,
         match,
         skip,
@@ -174,7 +192,6 @@ def export_view_csv(
     columns: list[str] | None = None,
     limit: int = 10000,
     include_conflicts: bool = False,
-    include_responses: bool = False,
     category: str | None = None,
     match: dict | None = None,
     skip: int = 0,
@@ -184,13 +201,14 @@ def export_view_csv(
     tool result could carry). Defaults to a generated path in the system
     temp directory if output_path is omitted.
 
-    Replication/save-conflict and response rows are skipped by default: a
-    conflict is a separate document the view index does return, and its
-    stored fields can be byte-identical to the winning document's, so it
-    otherwise shows up as a duplicate row that nothing downstream can tell
-    apart. Set include_conflicts/include_responses to get them, which also
-    adds an is_conflict/is_response column. The result's `skipped` counts
-    report how many rows each exclusion dropped."""
+    Replication/save-conflict rows are skipped by default: a conflict is a
+    separate document the view index does return, and its stored fields can
+    be byte-identical to the winning document's, so it otherwise shows up as
+    a duplicate row that nothing downstream can tell apart. Set
+    include_conflicts to get them, which also adds an is_conflict column.
+    Responses are not filtered out - put that in the view's selection formula
+    if you need it. The result's `skipped` counts report how many rows each
+    exclusion dropped."""
     return databases.export_view_csv(
         backend,
         server_name,
@@ -200,7 +218,6 @@ def export_view_csv(
         columns,
         limit,
         include_conflicts,
-        include_responses,
         category,
         match,
         skip,
@@ -405,6 +422,7 @@ async def update_document(
 _TOOL_FUNCS: dict[str, object] = {
     "get_mail_database_info": get_mail_database_info,
     "get_database_info": get_database_info,
+    "get_database_by_replica_id": get_database_by_replica_id,
     "read_document": read_document,
     "extract_document_media": extract_document_media,
     "extract_document_tables": extract_document_tables,
