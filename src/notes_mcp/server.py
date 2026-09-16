@@ -20,6 +20,7 @@ making any change - see ConfirmWrite/_confirm below.
 
 from __future__ import annotations
 
+import functools
 import os
 import sys
 from pathlib import Path
@@ -27,10 +28,16 @@ from typing import Any
 
 from dotenv import load_dotenv
 from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from pydantic import BaseModel, Field
 
 from . import updates
-from .notes_backend import NotesBackend, NotesConnectionError
+from .notes_backend import (
+    NotesBackend,
+    NotesBusyError,
+    NotesConnectionError,
+    current_operation,
+)
 from .tiers import PROFILES, TOOL_TAGS
 from .tools import databases, design, write
 
@@ -103,6 +110,7 @@ def read_document(
     include_media: bool = False,
     media_output_dir: str | None = None,
     include_tables: bool = False,
+    fields: list[str] | None = None,
 ) -> dict:
     """Read one document's fields by UniversalID from any database. Rich
     text fields come back as plain text only - check the "rich_text_items"
@@ -113,9 +121,17 @@ def read_document(
     keys, same shape those tools return - each costs a DXL export even if
     the document turns out to have nothing to extract, so leave both False
     for a plain field read when you don't yet know whether you'll need
-    them)."""
+    them).
+
+    `fields` restricts "items" to the named items (case-insensitively). A
+    workflow document routinely carries 200+ items - the whole
+    `$UpdatedBy`/`$Revisions` audit trail, one long string per line of every
+    embedded table - so naming the handful you want is the difference
+    between a few hundred bytes and a few hundred kilobytes per document.
+    Names the document doesn't carry come back in "missing_fields", so a
+    typo is distinguishable from an empty field."""
     return databases.read_document(
-        backend, server_name, file_path, unid, include_media, media_output_dir, include_tables
+        backend, server_name, file_path, unid, include_media, media_output_dir, include_tables, fields
     )
 
 
@@ -184,6 +200,27 @@ def search_view(
     )
 
 
+def get_view_info(server_name: str, file_path: str, view_name: str) -> dict:
+    """Size a view (entry count, columns, selection formula) without reading
+    its rows.
+
+    Call this BEFORE search_view/export_view_csv on any view you have not
+    sized before. Those walk the index one entry at a time, one COM round
+    trip each, so a large view can run for many minutes - and since all Notes
+    calls share one STA thread, a walk that long makes every other tool call
+    queue behind it. entry_count is a single index property instead.
+
+    entry_count is the number of documents in the view - category header
+    rows are not counted, and it is not an upper bound on the rows a walk
+    returns: a document filed under several values of a multi-value
+    categorized column is walked once per value (measured: a view reporting
+    11 walked to 21 rows over those same 11 documents). Treat it as a size
+    estimate for deciding how to read the view. is_large flags views big
+    enough that a full walk is a bad idea; page them with limit/skip, narrow
+    them with category (a real index seek), or export server-side instead."""
+    return databases.get_view_info(backend, server_name, file_path, view_name)
+
+
 def export_view_csv(
     server_name: str,
     file_path: str,
@@ -230,21 +267,47 @@ def find_document_by_key(
     view_name: str,
     key: str | list[str],
     exact: bool = True,
+    fields: list[str] | None = None,
 ) -> dict | None:
     """Fast lookup by a view's sorted column(s) (uses the view index). Pass a
     list for `key` to match a categorized view's leading columns in order.
     `exact=False` allows a prefix/partial match. Returns null if nothing
     matches. Prefer this over search_database when the value you're looking
-    up is a real column in an existing view."""
-    return databases.find_document_by_key(backend, server_name, file_path, view_name, key, exact)
+    up is a real column in an existing view. `fields` restricts the returned
+    "items" to the named items, as in read_document."""
+    return databases.find_document_by_key(
+        backend, server_name, file_path, view_name, key, exact, fields
+    )
 
 
-def search_database(server_name: str, file_path: str, formula: str, max_docs: int = 50) -> list[dict]:
+def search_database(
+    server_name: str,
+    file_path: str,
+    formula: str,
+    max_docs: int = 50,
+    count_only: bool = False,
+    fields: list[str] | None = None,
+) -> list[dict] | dict:
     """Search a database with a Notes @formula, evaluated against every
     document rather than using a view index - much slower than
     search_view/find_document_by_key, so prefer those when a suitable view
-    already exists. max_docs caps the result size."""
-    return databases.search_database(backend, server_name, file_path, formula, max_docs)
+    already exists. max_docs caps the result size.
+
+    Don't answer a counting question by fetching the documents and counting
+    them - on a GiB-scale database that is what makes this server stop
+    responding, and it is never necessary:
+
+    - `count_only=True` returns `{"count": N}` from the search collection
+      without opening a single document. It ignores max_docs on purpose (a
+      capped count would be a wrong answer, not a cheap one). The formula is
+      still evaluated over the database, so this is cheap in result size,
+      not in server time.
+    - `fields=["xFlag", "Tran_Type", ...]` restricts each document's "items"
+      to the named items, as in read_document - the usual case is wanting
+      five fields out of two hundred. Ignored when count_only is set."""
+    return databases.search_database(
+        backend, server_name, file_path, formula, max_docs, count_only, fields
+    )
 
 
 # ---- design tools ---------------------------------------------------------
@@ -266,7 +329,16 @@ def list_view_categories(server_name: str, file_path: str, view_name: str, max_l
     touching any document entries regardless of view size. max_level=0 is
     top-level only; increase to include deeper category levels (e.g. 1 for
     a "Cat1\\Cat2"-style categorized column). Use the returned values
-    directly with find_document_by_key."""
+    directly with find_document_by_key.
+
+    Each category also carries `descendant_count` (entries below it in
+    total) and `child_count` (immediate children only), read off the index
+    entry at no extra cost. On a single-level categorized view of documents
+    both are that category's document count, which makes "how many per
+    status/month/department" answerable entirely from the index - no
+    document read, no search. On a multi-level view they differ and neither
+    is a pure document count; take `descendant_count` at the deepest level.
+    Either is null where the navigator doesn't report it (never 0)."""
     return design.list_view_categories(backend, server_name, file_path, view_name, max_level)
 
 
@@ -323,12 +395,22 @@ def list_design_actions(
     file_path: str,
     name_filter: str | None = None,
     kinds: list[str] | None = None,
+    include_source: bool = True,
 ) -> list[dict]:
     """Every action button of the matching design notes, with its click and
     hidewhen code - the fastest way to answer "who can press this, and what
     does it do". Titles use a backslash for submenus. `kinds` defaults to
-    ["forms", "subforms", "views"]."""
-    return design.list_design_actions(backend, server_name, file_path, name_filter, kinds)
+    ["forms", "subforms", "views"].
+
+    Pass include_source=False to inventory an action bar without its code:
+    every event keeps its language and `source_chars`, but not its `source`.
+    Click handlers are the bulk of a Notes application (29 buttons on one
+    production subform came to 92k characters), so when the question is
+    "which buttons are here, who sees them, which have code", ask it cheaply
+    first and re-read with the source only for the handler you want."""
+    return design.list_design_actions(
+        backend, server_name, file_path, name_filter, kinds, include_source
+    )
 
 
 def list_subform_refs(
@@ -427,6 +509,7 @@ _TOOL_FUNCS: dict[str, object] = {
     "extract_document_media": extract_document_media,
     "extract_document_tables": extract_document_tables,
     "search_view": search_view,
+    "get_view_info": get_view_info,
     "export_view_csv": export_view_csv,
     "find_document_by_key": find_document_by_key,
     "search_database": search_database,
@@ -452,7 +535,50 @@ def register_tools(profile: str) -> None:
     active = PROFILES[profile]
     for name, fn in _TOOL_FUNCS.items():
         if TOOL_TAGS[name] & active:
-            server.tool()(fn)
+            server.tool()(_labelled(name, fn))
+
+
+# Failures this project raises on purpose, with a message written to be read.
+# Anything outside this tuple is treated as a crash and its text is withheld -
+# see _labelled.
+_ANTICIPATED = (NotesBusyError, NotesConnectionError, ValueError, FileNotFoundError)
+
+
+def _labelled(name: str, fn):
+    """Tag this tool's STA calls with its name, and let its own error messages
+    through.
+
+    Two jobs, both needing exactly one wrapper around every registered tool:
+
+    1. Diagnostics. When a call waits behind one that is still running,
+       StaWorker.call names the running tool - it reads that name from the
+       current_operation ContextVar this sets.
+
+    2. Error text. The MCP SDK only forwards the message of a `ToolError`;
+       every other exception reaches the model as a bare
+       "Error executing tool <name>", with the real text left in the server's
+       own log (see mcpserver/tools/base.py). This project raises plain
+       exceptions carrying the entire diagnosis - "No view named 'X'", the
+       server/file_path guidance on NotesConnectionError, the busy message
+       naming the stuck tool - and all of it was being dropped. Re-raising the
+       anticipated ones as ToolError is what makes them visible to the caller,
+       which is the only place that can act on them.
+
+    functools.wraps matters: the MCP SDK derives the tool's name, signature and
+    description from the callable, so an unwrapped closure would register every
+    tool as "wrapper" with no arguments."""
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        token = current_operation.set(name)
+        try:
+            return fn(*args, **kwargs)
+        except _ANTICIPATED as exc:
+            raise ToolError(str(exc)) from exc
+        finally:
+            current_operation.reset(token)
+
+    return wrapper
 
 
 def main(profile: str | None = None) -> None:

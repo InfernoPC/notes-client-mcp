@@ -13,6 +13,7 @@ entirely, so it cannot trigger that class of failure.
 
 from __future__ import annotations
 
+import contextvars
 import os
 import random
 import re
@@ -22,7 +23,27 @@ from typing import Callable, TypeVar
 
 import win32com.client
 
-from .sta_worker import StaWorker
+from .sta_worker import NotesBusyError, StaWorker
+
+__all__ = [
+    "MailAddress",
+    "NotesBackend",
+    "NotesBusyError",
+    "NotesConnectionError",
+    "current_operation",
+    "normalize_replica_id",
+    "open_database",
+    "open_database_by_replica_id",
+]
+
+# Name of the MCP tool currently being served, set by server.register_tools so
+# that a "server busy" error can say which tool is hogging the STA thread
+# instead of a generic "notes call". A ContextVar rather than an attribute
+# because the MCP SDK may serve tool calls from several threads/tasks at once,
+# and a shared mutable label would race between them.
+current_operation: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "notes_mcp_current_operation", default="notes call"
+)
 
 T = TypeVar("T")
 
@@ -87,7 +108,7 @@ class NotesBackend:
         last_exc: Exception | None = None
         for attempt in range(1, _INIT_MAX_ATTEMPTS + 1):
             try:
-                self._session = self._worker.call(_connect)
+                self._session = self._worker.call(_connect, label="connect")
                 last_exc = None
                 break
             except Exception as exc:  # noqa: BLE001
@@ -110,9 +131,12 @@ class NotesBackend:
         return self._session
 
     def run(self, fn: "Callable[[object], T]") -> T:
-        """Run fn(session) on the STA thread and return its result."""
+        """Run fn(session) on the STA thread and return its result.
+
+        Raises NotesBusyError if an earlier call is still occupying the STA
+        thread when this one's queue timeout elapses - see StaWorker.call."""
         session = self._require_session()
-        return self._worker.call(lambda: fn(session))
+        return self._worker.call(lambda: fn(session), label=current_operation.get())
 
     def get_mail_address(self) -> MailAddress:
         def _resolve(session):

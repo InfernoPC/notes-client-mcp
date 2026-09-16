@@ -145,6 +145,22 @@ def list_views(backend: NotesBackend, server: str, file_path: str) -> list[dict]
     return backend.run(_op)
 
 
+def _entry_count(entry, prop: str) -> int | None:
+    """One of a NotesViewEntry's index-side totals, or None.
+
+    These are properties of the index entry, not a walk, so they cost
+    nothing - but they are not universally available (an entry in a view
+    the navigator cannot total reports nothing), and a missing total must
+    not be reported as 0: that reads as "this category is empty", which is
+    a wrong answer rather than an absent one.
+    """
+    try:
+        value = getattr(entry, prop)
+    except Exception:  # noqa: BLE001 - not offered for this entry/view
+        return None
+    return None if value is None else int(value)
+
+
 def list_view_categories(
     backend: NotesBackend,
     server: str,
@@ -165,6 +181,18 @@ def list_view_categories(
     categorized column is very often a formula, not a plain field) - so use
     these values directly with find_document_by_key rather than guessing at
     what a document's stored field looks like.
+
+    Each category also carries its own totals, read straight off the index
+    entry: `descendant_count` is how many entries sit under it in total
+    (documents plus any sub-category headers), `child_count` only its
+    immediate children. For a single-level categorized view of documents
+    those are the same number and it is the count of documents in that
+    category - which makes "how many per status" a view-index question
+    rather than a reason to pull the documents. On a multi-level view they
+    differ, and neither is a pure document count: prefer
+    `descendant_count` at the deepest level. Either is null on the rare
+    entry whose count the navigator declines to report, rather than
+    reported as 0.
 
     The value is read from the position of the view's actual *categorized*
     column, which is not necessarily column 0. Reading ColumnValues[0]
@@ -203,7 +231,14 @@ def list_view_categories(
                 values = entry.ColumnValues
                 level = entry.IndentLevel
                 idx = cat_idxs[level] if level < len(cat_idxs) else cat_idxs[-1]
-                out.append({"value": values[idx] if idx < len(values) else None, "indent_level": level})
+                out.append(
+                    {
+                        "value": values[idx] if idx < len(values) else None,
+                        "indent_level": level,
+                        "descendant_count": _entry_count(entry, "DescendantCount"),
+                        "child_count": _entry_count(entry, "ChildCount"),
+                    }
+                )
             entry = nav.GetNextCategory(entry)
         return out
 
@@ -387,12 +422,18 @@ def _code_source(node) -> str:
     return "".join(parts)
 
 
-def _code_events(el) -> dict:
+def _code_events(el, include_source: bool = True) -> dict:
     """{event: {language, source}} for one element's own <code> children.
 
     Scoped to direct children on purpose: a <form> is full of <pardef>
     hidewhen formulas that have nothing to do with the form itself, and an
     <action>'s own hidewhen must not pick up a neighbour's.
+
+    With include_source=False each event keeps its language and the length
+    of its code but drops the code itself. The shape stays the same so a
+    caller can tell "this button has a click handler, in LotusScript, ~2 kB
+    of it" from "this button has none" - which is the whole question when
+    inventorying a note - without carrying the bodies.
     """
     events: dict[str, dict] = {}
     for code in el.findall(f"{_DXL_NS}code"):
@@ -402,7 +443,13 @@ def _code_events(el) -> dict:
         for language in _CODE_LANGUAGES:
             node = code.find(f"{_DXL_NS}{language}")
             if node is not None:
-                events.setdefault(event, {"language": language, "source": _code_source(node).strip()})
+                source = _code_source(node).strip()
+                entry = {"language": language}
+                if include_source:
+                    entry["source"] = source
+                else:
+                    entry["source_chars"] = len(source)
+                events.setdefault(event, entry)
                 break
     return events
 
@@ -487,6 +534,7 @@ def list_design_actions(
     file_path: str,
     name_filter: str | None = None,
     kinds: list[str] | None = None,
+    include_source: bool = True,
 ) -> list[dict]:
     """Every action button of the matching design notes, with its click and
     hidewhen code.
@@ -496,6 +544,14 @@ def list_design_actions(
     one - both are returned as-is, in action bar order. `shared` marks an
     action pulled in from the database's shared actions via
     <sharedactionref>.
+
+    Set include_source=False to inventory the action bar without the code:
+    each event keeps its language and `source_chars` but not its `source`.
+    Click handlers are where a Notes application keeps its bulk - 29 buttons
+    on one production subform came to 92k characters, nearly all of it
+    LotusScript nobody had asked for - so "which buttons exist, who sees
+    them, which ones have code" is worth asking as its own cheap question
+    before pulling the handler you actually want to read.
     """
 
     def _op(session):
@@ -515,7 +571,7 @@ def list_design_actions(
                         "show_in_bar": a.get("showinbar") != "false",
                         "system_command": a.get("systemcommand"),
                         "shared": id(a) in shared_ids,
-                        "events": _code_events(a),
+                        "events": _code_events(a, include_source),
                     }
                 )
             notes.append({**_note_header(element_type, el), "actions": actions})

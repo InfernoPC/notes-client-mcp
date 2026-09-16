@@ -16,6 +16,7 @@ TOOL_TAGS: dict[str, frozenset[str]] = {
     "extract_document_media": frozenset({"read"}),
     "extract_document_tables": frozenset({"read"}),
     "search_view": frozenset({"read"}),
+    "get_view_info": frozenset({"read"}),
     "export_view_csv": frozenset({"read"}),
     "find_document_by_key": frozenset({"read"}),
     "search_database": frozenset({"read"}),
