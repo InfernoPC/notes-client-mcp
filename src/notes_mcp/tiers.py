@@ -11,6 +11,7 @@ from __future__ import annotations
 TOOL_TAGS: dict[str, frozenset[str]] = {
     "get_mail_database_info": frozenset({"read"}),
     "get_database_info": frozenset({"read"}),
+    "get_database_by_replica_id": frozenset({"read"}),
     "read_document": frozenset({"read"}),
     "extract_document_media": frozenset({"read"}),
     "extract_document_tables": frozenset({"read"}),

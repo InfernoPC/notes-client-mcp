@@ -77,6 +77,25 @@ def get_database_info(server_name: str, file_path: str) -> dict:
     return databases.get_database_info(backend, server_name, file_path)
 
 
+def get_database_by_replica_id(replica_id: str, server_name: str = "") -> dict | None:
+    """Resolve a database by replica ID into the server + file_path pair every
+    other tool here needs, plus the usual metadata (title, size, FT index).
+
+    Use this whenever you have a replica ID and no path: a cross-database
+    link in an outline/doclink (`database='4825666C0023AB44'`), a
+    `notes://server/<16 hex>/...` URL, a Replication Properties dialog. Both
+    the bare 16-hex form and the colon-separated form are accepted.
+
+    The lookup is scoped to one server - `server_name` defaults to "" (the
+    local data directory), so pass the server you expect the replica on, and
+    call it again per candidate server if that misses. Returns null (not an
+    error) when that server holds no such replica, or when the current user
+    cannot open it; those two cases are indistinguishable. Scanning for a
+    replica ID is a directory scan, so once you have the file_path, use it
+    with get_database_info/the other tools instead of repeating this."""
+    return databases.get_database_by_replica_id(backend, replica_id, server_name)
+
+
 def read_document(
     server_name: str,
     file_path: str,
@@ -403,6 +422,7 @@ async def update_document(
 _TOOL_FUNCS: dict[str, object] = {
     "get_mail_database_info": get_mail_database_info,
     "get_database_info": get_database_info,
+    "get_database_by_replica_id": get_database_by_replica_id,
     "read_document": read_document,
     "extract_document_media": extract_document_media,
     "extract_document_tables": extract_document_tables,

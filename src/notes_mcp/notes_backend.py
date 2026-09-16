@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import os
 import random
+import re
 import time
 from dataclasses import dataclass
 from typing import Callable, TypeVar
@@ -145,3 +146,75 @@ def open_database(session, server: str, file_path: str):
             "retrying with variants."
         ) from exc
     return db
+
+
+def normalize_replica_id(replica_id: str) -> str:
+    """Accept either spelling of a replica ID and return the bare 16-hex form.
+
+    Notes shows the same value two ways and both turn up in the wild: DXL
+    and `NotesDatabase.ReplicaID` give 16 bare hex digits
+    ("48257B98001E8842"), while the Replication/Properties dialogs and most
+    LotusScript examples use the colon-separated pair
+    ("48257B98:001E8842"). Casing varies too. Normalizing here means callers
+    can paste whichever one they have."""
+    cleaned = re.sub(r"[\s:-]", "", replica_id or "").upper()
+    if not re.fullmatch(r"[0-9A-F]{16}", cleaned):
+        raise ValueError(
+            f"Not a replica ID: {replica_id!r}. Expected 16 hex digits, "
+            "optionally colon-separated (e.g. '48257B98001E8842' or "
+            "'48257B98:001E8842')."
+        )
+    return cleaned
+
+
+def open_database_by_replica_id(session, server: str, replica_id: str):
+    """Open a NotesDatabase by replica ID instead of file path, or return
+    None if that server holds no such replica. Same STA-thread rule as
+    open_database - never let the returned COM object out of the run()
+    closure.
+
+    A replica ID identifies a replica *set*, not a location, so the lookup
+    is still scoped to one server: it asks that server's
+    NotesDbDirectory for the replica and gets Nothing if the copy lives
+    somewhere else. `server=""` searches the local Notes data directory.
+
+    Two call shapes are tried because neither is universally documented as
+    accepting both ID spellings, and both are cheap:
+    `NotesDbDirectory.OpenDatabaseByReplicaID` first (it is the method that
+    exists for exactly this), then `NotesDatabase.OpenByReplicaID` on the
+    placeholder database `GetDatabase(server, "")` returns. Each is tried
+    with the bare 16-hex form and then the colon-separated form.
+
+    Returns None - not an error - when nothing matches, because "the
+    replica is on a different server" is the normal outcome of a hunt
+    across candidate servers, not a failure. Note that a replica the
+    caller has no access to is indistinguishable from an absent one here:
+    both come back as Nothing."""
+    rid = normalize_replica_id(replica_id)
+    spellings = (rid, f"{rid[:8]}:{rid[8:]}")
+    server = server or ""
+
+    try:
+        directory = session.GetDbDirectory(server)
+    except Exception as exc:  # noqa: BLE001 - surface the real COM reason
+        raise NotesConnectionError(
+            f"Could not open the database directory of server={server!r}: {exc}"
+        ) from exc
+
+    for spelling in spellings:
+        try:
+            db = directory.OpenDatabaseByReplicaID(spelling)
+        except Exception:  # noqa: BLE001 - wrong spelling for this build; try the next
+            db = None
+        if db is not None:
+            return db
+
+    placeholder = session.GetDatabase(server, "")
+    if placeholder is not None:
+        for spelling in spellings:
+            try:
+                if placeholder.OpenByReplicaID(server, spelling):
+                    return placeholder
+            except Exception:  # noqa: BLE001
+                continue
+    return None

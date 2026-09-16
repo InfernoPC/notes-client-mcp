@@ -14,7 +14,7 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 
 from ..exports import resolve_output_dir, resolve_output_path
-from ..notes_backend import NotesBackend, open_database
+from ..notes_backend import NotesBackend, open_database, open_database_by_replica_id
 
 _DXL_NS = "{http://www.lotus.com/dxl}"
 
@@ -79,6 +79,58 @@ def get_database_info(backend: NotesBackend, server: str, file_path: str) -> dic
             "server": db.Server,
             "file_path": db.FilePath,
             "title": db.Title,
+            "size_bytes": db.Size,
+            "is_ft_indexed": db.IsFTIndexed,
+        }
+
+    return backend.run(_op)
+
+
+def get_database_by_replica_id(
+    backend: NotesBackend,
+    replica_id: str,
+    server: str = "",
+) -> dict | None:
+    """Resolve a database by replica ID and return the same metadata
+    get_database_info returns, plus the `file_path` every other tool in this
+    server needs - the point of this tool is to turn a replica ID into that
+    server/file_path pair.
+
+    Replica IDs are what cross-database links actually store: an outline's
+    `<databaselink database='4825666C0023AB44'/>`, a `<viewlink>`/doclink, a
+    `notes://server/<16 hex>/...` URL, a database's Replication Properties.
+    None of those carry a file path, and session.GetDatabase - which every
+    other tool goes through - only takes a path, so a replica ID used to be
+    a dead end that could only be guessed at.
+
+    `replica_id` may be the bare 16-hex form ("48257B98001E8842") or the
+    colon-separated form ("48257B98:001E8842"); either is accepted.
+
+    A replica ID names a replica *set*, not a location, so the lookup is
+    scoped to one server at a time: `server` is a Notes hierarchical name in
+    abbreviated form (e.g. "Server1/ACME"), and defaults to "" - the local
+    Notes data directory. If a link came from a database on one server, that
+    server is the first place to look, but a replica ID travels with copies
+    of the design, so the replica it points at may well live elsewhere; call
+    this once per candidate server.
+
+    Returns None (not an error) when that server holds no such replica, so a
+    hunt across candidate servers is a normal sequence of calls rather than
+    a sequence of failures. A replica the current user has no access to is
+    indistinguishable from an absent one and also returns None. Note that
+    scanning a server's directory for a replica ID is a directory scan, not
+    an index lookup - it is slower than get_database_info with a known path,
+    so prefer the path once you have it."""
+
+    def _op(session):
+        db = open_database_by_replica_id(session, server, replica_id)
+        if db is None:
+            return None
+        return {
+            "server": db.Server,
+            "file_path": db.FilePath,
+            "title": db.Title,
+            "replica_id": db.ReplicaID,
             "size_bytes": db.Size,
             "is_ft_indexed": db.IsFTIndexed,
         }
