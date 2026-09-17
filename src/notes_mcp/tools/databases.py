@@ -138,24 +138,41 @@ def get_database_by_replica_id(
     return backend.run(_op)
 
 
-def _document_to_dict(doc) -> dict:
+def _document_to_dict(doc, fields: list[str] | None = None) -> dict:
+    """One document as plain data. `fields` restricts "items" to the named
+    items - see read_document for why that matters and what it costs.
+
+    Notes item names are case-insensitive, so the filter is too: asking for
+    "xflag" finds an item stored as "xFlag". Names that no item carries are
+    reported back in "missing_fields" rather than silently absent, because
+    on a form you did not write, a typo and a genuinely empty field look
+    exactly alike in the result.
+    """
+    wanted = {f.casefold() for f in fields} if fields is not None else None
+    found: set[str] = set()
     items = {}
     rich_text_items = []
     for item in doc.Items:
+        name = item.Name
+        if wanted is not None:
+            key = name.casefold()
+            if key not in wanted:
+                continue
+            found.add(key)
         try:
             item_type = item.Type
         except Exception:  # noqa: BLE001
             item_type = None
         if item_type == _ITEM_TYPE_RICHTEXT:
-            rich_text_items.append(item.Name)
+            rich_text_items.append(name)
         try:
-            items[item.Name] = item.Text if hasattr(item, "Text") else doc.GetItemValue(item.Name)
+            items[name] = item.Text if hasattr(item, "Text") else doc.GetItemValue(name)
         except Exception:  # noqa: BLE001 - some item types don't support .Text via COM
             try:
-                items[item.Name] = list(doc.GetItemValue(item.Name))
+                items[name] = list(doc.GetItemValue(name))
             except Exception:  # noqa: BLE001
-                items[item.Name] = None
-    return {
+                items[name] = None
+    result = {
         "unid": doc.UniversalID,
         "form": doc.GetItemValue("Form")[0] if doc.HasItem("Form") else None,
         "created": str(doc.Created),
@@ -167,6 +184,9 @@ def _document_to_dict(doc) -> dict:
         # extract_document_media on this same document.
         "rich_text_items": rich_text_items,
     }
+    if fields is not None:
+        result["missing_fields"] = [f for f in fields if f.casefold() not in found]
+    return result
 
 
 def _extract_media(session, doc, unid: str, output_dir: str | None) -> list[dict]:
@@ -249,6 +269,7 @@ def read_document(
     include_media: bool = False,
     media_output_dir: str | None = None,
     include_tables: bool = False,
+    fields: list[str] | None = None,
 ) -> dict:
     """Read one document's fields by UniversalID. Set include_media=True to
     also extract any images/attachments in the same call (see
@@ -260,14 +281,24 @@ def read_document(
     to False for a plain field read with no local file writes / DXL export;
     check the result's "rich_text_items" list and call extract_document_media
     / extract_document_tables separately afterward if you only sometimes
-    need them and want to avoid paying for a DXL export on every read."""
+    need them and want to avoid paying for a DXL export on every read.
+
+    `fields` restricts "items" to the named items (case-insensitive). A
+    Notes document carries every item the form ever computed, not just the
+    ones anyone reads: a routine workflow document runs to 200+ items,
+    including the whole `$UpdatedBy`/`$Revisions` audit trail and one long
+    string per line of a multi-line table, so reading a handful of named
+    fields across a set of documents can otherwise cost hundreds of
+    kilobytes of result for a few hundred bytes of answer. Names you ask for
+    that the document does not carry come back in "missing_fields".
+    Leave it unset to get every item."""
 
     def _op(session):
         db = open_database(session, server, file_path)
         doc = db.GetDocumentByUNID(unid)
         if doc is None:
             raise ValueError(f"No document with UNID {unid!r}")
-        result = _document_to_dict(doc)
+        result = _document_to_dict(doc, fields)
         if include_media:
             result["media"] = _extract_media(session, doc, unid, media_output_dir)
         if include_tables:
@@ -417,13 +448,17 @@ def find_document_by_key(
     view_name: str,
     key: str | list[str],
     exact: bool = True,
+    fields: list[str] | None = None,
 ) -> dict | None:
     """Fast lookup by a view's sorted column(s), using the view index -
     NotesView.GetDocumentByKey(key, exact). `key` matches a single sorted
     column, or pass a list to match a categorized view's leading columns in
     order. `exact=False` allows a prefix/partial match. Returns None (not an
     error) if nothing matches - prefer this over search_database when the
-    lookup value is a real column in an existing view."""
+    lookup value is a real column in an existing view.
+
+    `fields` restricts the returned "items" to the named items, exactly as
+    in read_document."""
 
     def _op(session):
         db = open_database(session, server, file_path)
@@ -431,7 +466,7 @@ def find_document_by_key(
         if view is None:
             raise ValueError(f"No view named {view_name!r}")
         doc = view.GetDocumentByKey(key, exact)
-        return _document_to_dict(doc) if doc is not None else None
+        return _document_to_dict(doc, fields) if doc is not None else None
 
     return backend.run(_op)
 
@@ -442,17 +477,41 @@ def search_database(
     file_path: str,
     formula: str,
     max_docs: int = 50,
-) -> list[dict]:
+    count_only: bool = False,
+    fields: list[str] | None = None,
+) -> list[dict] | dict:
     """Search a database with a Notes @formula (NotesDatabase.Search) -
     evaluates the formula against every document rather than using a view
     index, so it is much slower than search_view/find_document_by_key.
     Prefer those when the data you need is already exposed by an existing
     view; use this only when no suitable view exists. max_docs caps the
     result size (and roughly the work done) since a broad formula can match
-    a very large fraction of the database."""
+    a very large fraction of the database.
+
+    Two ways to keep the result proportional to the question, both of which
+    matter more than they sound: a full document is 200+ items wide (see
+    read_document on `fields`), so "how many X are there" answered by
+    fetching every X has been measured at 300k+ characters of result for one
+    integer, and on a GiB-scale NSF it is what takes the server down rather
+    than merely slowing it.
+
+    - `count_only=True` returns `{"count": N}` and never touches a single
+      document: NotesDatabase.Search builds the collection first and N is
+      its Count, so the documents are never opened or read. It deliberately
+      ignores max_docs - capping the collection would cap the count, and a
+      capped count is a wrong answer rather than a cheap one. The work of
+      evaluating the formula over the database is still done, so this is
+      cheap in *result size and transfer*, not in server CPU.
+    - `fields=[...]` returns documents with "items" restricted to the named
+      items, as in read_document. Ignored when count_only is set, since
+      there are then no documents to project."""
 
     def _op(session):
         db = open_database(session, server, file_path)
+        if count_only:
+            # maxdocs=0 means unlimited here, which is the whole point: any
+            # cap would be silently subtracted from the number returned.
+            return {"count": int(db.Search(formula, None, 0).Count)}
         collection = db.Search(formula, None, max_docs)
         # db.Search's maxdocs argument only caps collection.Count - confirmed
         # by hand that iterating via GetFirstDocument/GetNextDocument walks
@@ -464,7 +523,7 @@ def search_database(
         doc = collection.GetFirstDocument()
         count = 0
         while doc is not None and (max_docs <= 0 or count < max_docs):
-            out.append(_document_to_dict(doc))
+            out.append(_document_to_dict(doc, fields))
             doc = collection.GetNextDocument(doc)
             count += 1
         return out
@@ -719,5 +778,73 @@ def export_view_csv(
             writer.writeheader()
             writer.writerows(rows)
         return {"output_path": path, "row_count": len(rows), "skipped": skipped}
+
+    return backend.run(_op)
+
+
+# Above this, a view's size is big enough that a full walk is a bad idea
+# over the network - search_view/export_view_csv read ColumnValues per entry,
+# which is a COM round trip each. Purely advisory: get_view_info only reports
+# it, nothing refuses to walk.
+_LARGE_VIEW_ENTRIES = 20000
+
+
+def get_view_info(backend: NotesBackend, server: str, file_path: str, view_name: str) -> dict:
+    """Return a view's entry count and column layout without walking it.
+
+    EntryCount is one property read that Domino answers from the view index,
+    so this is the cheap way to size a view before deciding how to read it.
+    Walking instead - search_view/export_view_csv with a high limit - costs a
+    COM round trip per entry: measured on a 63 GB NSF, a three-tier document
+    view had not finished after 20 minutes, and because the STA thread is
+    shared it took every other tool call down with it.
+
+    One caveat that no property can hide: if the view's index is stale or was
+    never built, the *first* access of any kind makes the server build it,
+    and that build is the slow part. EntryCount pays that cost too. What this
+    tool buys you is that you pay it once, for one property, instead of
+    discovering it halfway through a 100k-row export.
+
+    `entry_count` is how many *documents* the view holds - measured against
+    a walk of the same views, not assumed: a one-category view reporting 9
+    walked to exactly 9 rows over 9 distinct UNIDs, so category header rows
+    are not counted. It is a size estimate, not a row count, and notably not
+    an upper bound: a categorized column that holds multiple values files
+    its document under each of them, and the second view measured reported
+    11 while a walk returned 21 rows over those same 11 documents.
+    `match`/`skip` filtering and skipped conflicts move it the other way.
+    Use it to decide *how* to read a view, not to predict the exact result.
+    `is_large` is a hint against _LARGE_VIEW_ENTRIES, not a limit: nothing
+    here refuses to walk."""
+
+    def _op(session):
+        db = open_database(session, server, file_path)
+        view = db.GetView(view_name)
+        if view is None:
+            raise ValueError(f"No view named {view_name!r}")
+        entry_count = int(view.EntryCount)
+        columns = [
+            {
+                "title": c.Title or c.ItemName,
+                "item_name": c.ItemName,
+                "is_categorized": bool(c.IsCategory),
+                "is_sorted": bool(c.IsSorted),
+                "is_icon": bool(c.IsIcon),
+            }
+            for c in view.Columns
+        ]
+        return {
+            "server": db.Server,
+            "file_path": db.FilePath,
+            "view_name": view.Name,
+            "aliases": [a for a in (view.Aliases or []) if a],
+            "entry_count": entry_count,
+            "is_large": entry_count > _LARGE_VIEW_ENTRIES,
+            "is_folder": bool(view.IsFolder),
+            "is_categorized": any(c["is_categorized"] for c in columns),
+            "column_count": len(columns),
+            "columns": columns,
+            "selection_formula": view.SelectionFormula,
+        }
 
     return backend.run(_op)

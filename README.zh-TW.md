@@ -89,6 +89,16 @@ Read（`read` profile）：
   `list_mail_folders`/`search_mail`/`read_mail` 這幾個包裝，因為通用 tool 配上信箱的 server+path
   就能做一樣的事，屬於多餘的特殊化，已移除）。
 - `get_database_info`、`read_document`、`search_view`（任何資料庫，用 server+file path 指定）
+- `get_database_by_replica_id`——把 replica ID 換成其他 tool 都需要的 server + file path。
+  跨資料庫的連結本來就不存路徑：outline 的 `<databaselink database='4825666C0023AB44'/>`、
+  文件連結（小黃紙）、`notes://server/<16 碼 hex>/...` 這種 URL、複本內容（Replication）
+  屬性對話框，給的都只有 replica ID，而其他每個 tool 走的 `session.GetDatabase` 只吃路徑——
+  所以以前拿到 replica ID 等於死路一條，只能用猜的。兩種寫法都接受（`48257B98001E8842` 或
+  `48257B98:001E8842`）。replica ID 標示的是一組「複本」而不是位置，所以查詢一次只針對一台
+  server（`server_name` 預設 `""`，也就是本機 data 目錄）；那台 server 上沒有這個複本時回傳
+  null 而不是錯誤，所以一台一台試是正常用法，不是一連串失敗。目前使用者沒有權限開的複本，跟
+  根本不存在的複本無法區分，都是回 null。這是掃目錄不是查索引，所以拿到 `file_path` 之後就
+  改用路徑。
 - `extract_document_media`——`read_document` 回傳的欄位值一律是純文字，就算是 rich text 欄位也一樣
   （`read_document` 的結果會用 `rich_text_items` 標出哪些欄位是 rich text；也可以呼叫
   `read_document` 時帶 `include_media=True`，一次拿到兩者，不用分開呼叫——反正不管哪種呼叫方式都要
@@ -109,6 +119,16 @@ Read（`read` profile）：
   這是 DXL 原本編碼的每列儲存格清單，不是重建過的視覺網格，但 colspan/rowspan/bgcolor 已經足夠自己
   手動排出實際版面；`row_labels` 帶的是每一列的 `tablabel` 屬性（常見於分頁式表格），沒有的話是
   null。`read_document` 帶 `include_tables=True` 可以一次拿到同樣的結果，不用分開呼叫。
+- `get_view_info`——直接從索引讀出 view 的資料筆數、欄位與 selection formula，不走訪任何一列。
+  對還不確定規模的 view，先用這個再決定要不要 `search_view` / `export_view_csv`：那兩個每一列
+  都要一次 COM 來回，大 view 可能要跑好幾分鐘，而所有 Notes 呼叫共用同一條 STA thread，一個
+  走訪太久就會讓其他 tool call 全部排在後面（已在 63 GB 的 NSF 上實測：一個 35,718 筆的 view
+  匯出跑了 20 分鐘還沒結束，同一個 view 用 `get_view_info` 是瞬間回覆）。`entry_count` 是這個
+  view 的**文件數**——已用實際走訪比對過：分類標題列不算在內，而且它**不是**走訪筆數的上限，
+  因為分類欄位是多值時，同一份文件會掛在每一個值底下、走訪時就被走到好幾次（實測：一個
+  `entry_count` 回報 11 的 view，走訪出來是 21 列，對應的仍是那 11 份文件）。請把它當成
+  「決定這個 view 要怎麼讀」的規模估計，而不是精確筆數。`is_large` 標示的是建議改用
+  `limit`/`skip` 分頁、或用 `category` 縮小範圍的 view。
 - `export_view_csv`——直接把 view 的資料寫成本機 CSV 檔（回傳的是檔案路徑，不是資料本身），不像
   `search_view` 會受限於 MCP tool 回傳結果的大小上限，適合資料量大的 view。
 - `find_document_by_key`——用 view 排序過的欄位快速查找（走 view 索引）。只要你要查的值本來就是
@@ -117,6 +137,29 @@ Read（`read` profile）：
   比 `search_view`/`find_document_by_key` 慢很多，因為沒有走 view 索引；`max_docs` 會限制回傳筆數
   （已實測確認：底層 `NotesDatabase.Search` 呼叫本身的 `maxdocs` 參數只會限制 `.Count` 回報的數字，
   並不會限制實際能走訪到的文件數——這個 tool 自己在迴圈裡強制做上限，不依賴那個參數）。
+  帶 `count_only=True` 則只回 `{"count": N}`，直接從搜尋集合取數，完全不開任何一份文件；它會
+  刻意忽略 `max_docs`，因為被截斷的計數不是「比較便宜的答案」，而是錯的答案。
+
+### 只要你真正需要的那一點（issue #6）
+
+Notes 文件不管你想不想要，一份就是 200 多個欄位——整串 `$UpdatedBy`／`$Revisions` 稽核紀錄、
+表格每一列一長串字串——而按鈕的 click 程式碼又是一個 Notes 應用系統最肥的地方。所以以前一個很窄的
+問題，預設答案卻大得離譜：在六個生產 NSF 上實測，「每個月幾張領料單」回來的是 319,206 字的完整
+文件，「這支副表單有哪些按鈕」是 92,882 字的 LotusScript。而在 2.53 GiB 的 NSF 上，光是「數張數」
+這個版本就直接把 server 弄掛了——走訪 GiB 級的文件會把唯一那條 STA thread 佔死（見下面的說明）。
+
+上面每一種現在都有一個「窄版」問法：
+
+- `search_database(..., count_only=True)` → `{"count": N}`，一份文件都不開。若剛好有合適的分類
+  view，`list_view_categories` 的分類筆數（見下面）能完全走索引回答同一個問題；整個 view 的規模
+  則用 `get_view_info` 的 `entry_count`。
+- `search_database(..., fields=[...])`、`read_document(..., fields=[...])`、
+  `find_document_by_key(..., fields=[...])` 把 `items` 限制在指定欄位。比對不分大小寫
+  （`"xflag"` 找得到 `xFlag`），你指定但文件沒有的欄位會列在 `missing_fields`，所以「打錯字」跟
+  「欄位是空的」分得出來。
+- `list_design_actions(..., include_source=False)` 保留每個事件的語言與 `source_chars`，但不帶
+  程式碼本身，讓「有哪些按鈕、誰看得到、哪些有程式碼」變成一個便宜的先導查詢，確認之後再單獨把
+  你真正要讀的那一支抓回來。
 
 Design（`design` profile，額外新增）：
 - `list_forms`、`list_views`（含 selection formula + 欄位公式）、`list_agents`
@@ -124,7 +167,11 @@ Design（`design` profile，額外新增）：
   view 自己的分類值，不管 view 多大都完全不碰任何文件（已實測確認：
   `NotesViewNavigator.MaxLevel` + `GetNextCategory()` 在任何深度都能正確跳過所有文件）。
   因為分類欄位常常是公式算出來的，不是單純欄位，這裡回傳的是 view 自己算出來、實際拿去分組用的值——
-  可以直接拿去餵 `find_document_by_key`，不用自己猜文件裡存的欄位長怎樣。
+  可以直接拿去餵 `find_document_by_key`，不用自己猜文件裡存的欄位長怎樣。每個分類還會附上
+  `descendant_count`（底下總共幾筆）與 `child_count`（只算直屬子項），都是直接從索引項目讀出來的：
+  單層分類的文件 view 兩者就是那個分類的文件數，所以「各狀態／各月份／各部門幾張」完全不用讀文件、
+  也不用搜尋。多層分類時兩者會不同，而且都不是純粹的文件數——請取最深一層的 `descendant_count`。
+  navigator 不提供時是 null（不是 0）。
 - `list_design_elements(server_name, file_path, kind)`——列出沒有專屬 tool 的設計元素種類，用名稱
   列表：`subforms`、`outlines`、`pages`、`framesets`、`script_libraries`、`shared_fields`、
   `database_script`、`navigators`、`image_resources`、`java_resources`、`stylesheet_resources`、
@@ -139,6 +186,9 @@ Design（`design` profile，額外新增）：
   pending-delete 狀態。
 - `list_acl(server_name, file_path)`——資料庫定義的角色，以及每個 entry 的名稱/存取等級（標準
   Domino 0-6 分級，附可讀名稱）/角色/幾個常見的能力旗標。
+- `list_design_actions(server_name, file_path, name_filter, kinds, include_source)`——符合條件的
+  設計元素上每一顆動作按鈕，含 click／hidewhen 程式碼。`include_source=False` 會回傳一樣的結構，
+  但不帶程式碼本身（見上面「只要你真正需要的那一點」）。
 - `export_design_dxl(server_name, file_path, kinds, name_filter)`——完整匯出上面任何種類的 DXL
   （XML）（預設 `["forms", "views", "agents"]`），含 agent 的 LotusScript/公式原始碼、form/view
   公式，以及 `list_design_elements` 沒辦法逐筆列出的種類（例如 `actions`）的完整內容。需要目標
@@ -232,7 +282,17 @@ pywin32 的 DLL，Windows 會鎖檔讓 pip 裝不上去。
   都鎖著，所以稍等一下重試就會成功）。已做壓力測試，4 個 profile 同時啟動 12/12 次都成功連線；如果
   你之後還是遇到這個錯誤，值得重新測一次，不要假設它是永久性的問題。
 - 沒有通用的「列出所有資料庫」功能——只有信箱資料庫會自動偵測（透過 `notes.ini` 的
-  `MailServer`/`MailFile`）。其他資料庫要自己明確指定 `server` + `file_path`。
+  `MailServer`/`MailFile`）。其他資料庫要自己明確指定 `server` + `file_path`，或是用
+  `get_database_by_replica_id` 從 replica ID 反查出來（但還是得告訴它要找哪一台 server）。
+- 所有 Notes COM 呼叫都序列化在同一條 STA thread 上，而同步的 COM 呼叫沒辦法從外部取消——
+  所以一個慢呼叫會擋住後面全部，直到它自己跑完。這件事以前是無聲的：在 63 GB 的 NSF 上實測，
+  一個 `export_view_csv` 走訪需要重建索引的 view 跑超過 20 分鐘，期間後續每一個呼叫（連
+  `get_database_info` 這種極輕量的都一樣）都卡在佇列裡，最後一律被 MCP client 自己的 idle
+  timeout 砍掉，而且沒有任何訊息指出真正的原因。現在還在**排隊中**的呼叫會在
+  `NOTES_MCP_QUEUE_TIMEOUT` 秒後放棄（預設 60，設 `0` 停用），並回傳一個明確指出是哪個 tool
+  佔住 thread、已經跑多久的錯誤。已經開始執行的呼叫則永遠不會被 timeout——放棄等待並不會讓
+  COM 呼叫停下來，只會把「還在跑」這個事實換成一個誤導人的錯誤。真的卡死時唯一的解法仍然是
+  重啟 MCP server；`get_view_info` 則是一開始就不要去招惹它的方法。
 - 目前還沒有行事曆相關的 tool。
 - 寫入類 tool 已經透過真正的 MCP 路徑、帶著 elicitation 確認，對活的資料庫親自測過（建立、更新、
   衝突偵測、欄位型別處理）——不過每個資料庫的表單/ACL 都不一樣，真的要動重要資料前，還是建議先拿
